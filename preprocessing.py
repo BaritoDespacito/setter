@@ -23,16 +23,18 @@ TYPE_TO_TOKEN = {
     15: 3,
 }
 
-def parseSequence(text):
+def parseSequence(row):
     """
     Parses hold sequence from dataset into tokens.
-    :param text: a string containing the sequence of holds
+    :param row: a string containing the sequence of holds
     :return: a list of tokens
     """
-    holds = re.findall(r'p(\d+)r(\d+)', text)
+    holds = re.findall(r'p(\d+)r(\d+)', row['text'])
     sequence = []
     for hold in holds:
         sequence.append((int(hold[0]), TYPE_TO_TOKEN[int(hold[1])]))
+    sequence = [START_TOKEN] + sequence + [END_TOKEN]
+    angle = float(row['angle'])/70.0
 
 
-parseSequence(dataset['train'][0]['text'])
+parseSequence(dataset['train'][0])
