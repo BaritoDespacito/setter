@@ -1,4 +1,5 @@
 from datasets import load_dataset
+import torch
 import re
 
 dataset = load_dataset("ilsenatorov/kilterboard")
@@ -26,8 +27,8 @@ TYPE_TO_TOKEN = {
 def parseSequence(row):
     """
     Parses hold sequence from dataset into tokens.
-    :param row: a string containing the sequence of holds
-    :return: a list of tokens
+    :param row: a list representing a row in the dataset
+    :return: a dict, containing the sequence of holds, angle and grade
     """
     holds = re.findall(r'p(\d+)r(\d+)', row['text'])
     sequence = []
@@ -35,6 +36,10 @@ def parseSequence(row):
         sequence.append((int(hold[0]), TYPE_TO_TOKEN[int(hold[1])]))
     sequence = [START_TOKEN] + sequence + [END_TOKEN]
     angle = float(row['angle'])/70.0
+    grade = (float(row['difficulty'])-10.0)/21.0
 
-
-parseSequence(dataset['train'][0])
+    return {
+        'sequence': sequence,
+        'angle': torch.tensor(angle),
+        'grade': torch.tensor(grade),
+    }
