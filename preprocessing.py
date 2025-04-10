@@ -1,5 +1,6 @@
 from datasets import load_dataset
 import torch
+from torch.utils.data import Dataset
 import re
 
 dataset = load_dataset("ilsenatorov/kilterboard")
@@ -24,7 +25,7 @@ TYPE_TO_TOKEN = {
     15: 3,
 }
 
-def parseSequence(row):
+def parseRow(row):
     """
     Parses hold sequence from dataset into tokens.
     :param row: a list representing a row in the dataset
@@ -43,3 +44,13 @@ def parseSequence(row):
         'angle': torch.tensor(angle),
         'grade': torch.tensor(grade),
     }
+
+class KilterDataset(Dataset):
+    def __init__(self, data):
+        self.data = [parseRow(x) for x in data]
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        return self.data[idx]
