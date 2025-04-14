@@ -15,6 +15,7 @@ class KilterDataset(Dataset):
         return self.data[idx]
 
 dataset = load_dataset("ilsenatorov/kilterboard")
+dataset.train_test_split(test_size=0.2)
 print(dataset['train'][0])
 
 # SPECIAL TOKENS
@@ -40,7 +41,7 @@ tokenizer = AutoTokenizer.from_pretrained("t5-small")
 tokenizer.add_tokens([START_TOKEN, END_TOKEN, PAD_TOKEN])
 
 train_dataset = KilterDataset(dataset["train"])
-val_dataset = KilterDataset(dataset["validation"])
+test_dataset = KilterDataset(dataset["test"])
 
 def parseRow(row):
     """
