@@ -1,22 +1,12 @@
-from datasets import load_dataset
+from datasets import load_dataset, DatasetDict
 import torch
 from torch.utils.data import Dataset
 import re
 from transformers import AutoTokenizer, DataCollatorForSeq2Seq
 
-class KilterDataset(Dataset):
-    def __init__(self, data):
-        self.data = [parseRow(x) for x in data]
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        return self.data[idx]
-
-dataset = load_dataset("ilsenatorov/kilterboard")
-dataset.train_test_split(test_size=0.2)
-print(dataset['train'][0])
+dataset = load_dataset("ilsenatorov/kilterboard", split="train")
+dataset = dataset.train_test_split(test_size=0.2)
+print(dataset["train"][0])
 
 # SPECIAL TOKENS
 START_TOKEN = "<START>"
@@ -40,9 +30,6 @@ TYPE_TO_TOKEN = {
 tokenizer = AutoTokenizer.from_pretrained("t5-small")
 tokenizer.add_tokens([START_TOKEN, END_TOKEN, PAD_TOKEN])
 
-train_dataset = KilterDataset(dataset["train"])
-test_dataset = KilterDataset(dataset["test"])
-
 def parseRow(row):
     """
     Parses hold sequence from dataset into tokens.
@@ -64,7 +51,11 @@ def parseRow(row):
     }
 
 def collate_fn(batch):
-    """Pad sequences and combine grade/angle inputs"""
+    """
+    Pads the input sequences and labels to the same length.
+    :param batch:
+    :return:
+    """
     padded_batch = {
         "input_ids": torch.nn.utils.rnn.pad_sequence(
             [torch.tensor(x["input_ids"]) for x in batch],
@@ -80,6 +71,19 @@ def collate_fn(batch):
         "angle": torch.stack([x["angle"] for x in batch])
     }
     return padded_batch
+
+class KilterDataset(Dataset):
+    def __init__(self, data):
+        self.data = [parseRow(x) for x in data]
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        return self.data[idx]
+
+train_dataset = KilterDataset(dataset["train"])
+test_dataset = KilterDataset(dataset["test"])
 
 sample = train_dataset[0]
 print("Input IDs:", sample["input_ids"])
