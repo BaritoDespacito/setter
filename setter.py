@@ -10,7 +10,7 @@ START_TOKEN_ID = 4
 END_TOKEN_ID = 5
 PAD_TOKEN_ID = 6
 
-class KilterTransformer(nn.Module):
+class Setter(nn.Module):
     def __init__(self, vocab_size, d_model=256, nhead=8, num_layers=6):
         super().__init__()
         self.d_model = d_model

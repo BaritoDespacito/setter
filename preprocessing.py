@@ -51,13 +51,13 @@ def parseRow(row, min_truncate=1):
     holds = re.findall(r'p(\d+)r(\d+)', row['text'])
     sequence = [START_TOKEN_ID]
     for hold in holds:
-        sequence.append(int(hold[0]))
-        sequence.append(TYPE_TO_TOKEN[int(hold[1])])
+        hold_token = int(hold[0]) * 10 + TYPE_TO_TOKEN[int(hold[1])]
+        sequence.append(hold_token)
     sequence.append(END_TOKEN_ID)
 
     truncate_at = random.randint(min_truncate, len(holds) - 1)
     input_ids = sequence[:truncate_at]
-    # print("input_ids:", input_ids)
+    print("input_ids:", input_ids)
     labels = [sequence[truncate_at]]
     # print("labels:", labels)
 
@@ -124,3 +124,5 @@ print("Batch input_ids shape:", batch["input_ids"].shape)
 print("Batch labels shape:", batch["labels"].shape)
 print("Batch grades:", batch["grade"])
 print("Batch angles:", batch["angle"])
+print("Max ID in batch:", batch["input_ids"].max().item())
+print("Min ID in batch:", batch["input_ids"].min().item())
