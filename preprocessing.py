@@ -57,7 +57,7 @@ def parseRow(row, min_truncate=1):
 
     truncate_at = random.randint(min_truncate, len(holds) - 1)
     input_ids = sequence[:truncate_at]
-    print("input_ids:", input_ids)
+    # print("input_ids:", input_ids)
     labels = [sequence[truncate_at]]
     # print("labels:", labels)
 

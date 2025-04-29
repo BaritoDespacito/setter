@@ -11,7 +11,6 @@ EPOCHS = 10
 LEARNING_RATE = 1e-4
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-
 def train():
 
     train_loader = DataLoader(
@@ -21,7 +20,7 @@ def train():
         collate_fn=collate_fn
     )
 
-    val_loader = DataLoader(
+    test_loader = DataLoader(
         test_dataset,
         batch_size=BATCH_SIZE,
         collate_fn=collate_fn
@@ -56,7 +55,7 @@ def train():
         model.eval()
         val_loss = 0
         with torch.no_grad():
-            for batch in val_loader:
+            for batch in test_loader:
                 input_ids = batch["input_ids"].to(DEVICE)
                 grade = batch["grade"].to(DEVICE)
                 angle = batch["angle"].to(DEVICE)
@@ -66,7 +65,7 @@ def train():
                 val_loss += criterion(logits.view(-1, vocab_size), labels.view(-1)).item()
 
         print(
-            f"Epoch {epoch + 1} | Train Loss: {train_loss / len(train_loader):.4f} | Val Loss: {val_loss / len(val_loader):.4f}")
+            f"Epoch {epoch + 1} | Train Loss: {train_loss / len(train_loader):.4f} | Val Loss: {val_loss / len(test_loader):.4f}")
 
         # Save checkpoint
         torch.save(model.state_dict(), f"kilter_setter_epoch_{epoch}.pt")

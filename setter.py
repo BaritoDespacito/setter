@@ -39,48 +39,47 @@ class Setter(nn.Module):
             angle: (batch_size,) - Normalized wall angle (0-1)
             labels: (batch_size, seq_len) - Target holds (for training)
         """
-        # Embed holds
-        x = self.embedding(input_ids) * (self.d_model ** 0.5)  # (batch, seq, d_model)
+        # 1. Embed holds and conditions (unchanged)
+        x = self.embedding(input_ids) * (self.d_model ** 0.5)
+        grade_emb = self.grade_embed(grade.unsqueeze(-1))
+        angle_emb = self.angle_embed(angle.unsqueeze(-1))
+        x = x + grade_emb.unsqueeze(1) + angle_emb.unsqueeze(1)
+        x = x.transpose(0, 1)  # (seq_len, batch, d_model)
 
-        # Embed conditions and add to every position
-        grade_emb = self.grade_embed(grade.unsqueeze(-1))  # (batch, d_model)
-        angle_emb = self.angle_embed(angle.unsqueeze(-1))  # (batch, d_model)
-        x = x + grade_emb.unsqueeze(1) + angle_emb.unsqueeze(1)  # Broadcast
-
-        # Transformer expects (seq_len, batch, d_model)
-        x = x.transpose(0, 1)
-
-        # Generate masks
-        src_mask = self.transformer.generate_square_subsequent_mask(x.size(0)).to(x.device)
-        src_pad_mask = (input_ids == PAD_TOKEN_ID)
-
-        # Forward pass
+        # 2. Generate proper masks
         if labels is not None:
-            # Teacher forcing (shift labels for decoder input)
-            decoder_input = labels[:, :-1]
+            # For training (teacher forcing)
+            tgt_seq_len = labels.size(1)
+
+            # Causal mask for decoder (prevents peeking ahead)
+            tgt_mask = self.transformer.generate_square_subsequent_mask(tgt_seq_len).to(x.device)
+
+            # Padding mask for encoder
+            src_pad_mask = (input_ids == PAD_TOKEN_ID)
+
+            # Prepare decoder input
             decoder_input = torch.cat([
-                torch.full((labels.size(0), 1), START_TOKEN_ID, device=labels.device),
-                decoder_input
+                torch.full((labels.size(0),), START_TOKEN_ID, device=x.device).unsqueeze(1),
+                           labels[:, :-1]
             ], dim=1)
 
             decoder_emb = self.embedding(decoder_input) * (self.d_model ** 0.5)
             decoder_emb = decoder_emb.transpose(0, 1)
 
+            # Forward pass with masks
             out = self.transformer(
                 src=x,
                 tgt=decoder_emb,
-                tgt_mask=src_mask,
+                tgt_mask=tgt_mask,
                 src_key_padding_mask=src_pad_mask,
-                tgt_key_padding_mask=(decoder_input == PAD_TOKEN_ID),
+                memory_key_padding_mask=src_pad_mask,
             )
         else:
-            # Inference mode (autoregressive)
+            # For inference (autoregressive)
             out = self.transformer(
                 src=x,
                 tgt=None,
-                src_key_padding_mask=src_pad_mask,
+                src_key_padding_mask=(input_ids == PAD_TOKEN_ID),
             )
 
-        # Predict next holds
-        out = self.fc_out(out.transpose(0, 1))  # (batch, seq, vocab_size)
-        return out
+        return self.fc_out(out.transpose(0, 1))
