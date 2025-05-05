@@ -32,30 +32,20 @@ class Setter(nn.Module):
         self.fc_out = nn.Linear(d_model, vocab_size)
 
     def forward(self, input_ids, grade, angle, labels=None):
-        """
-        Args:
-            input_ids: (batch_size, seq_len) - Hold sequences
-            grade: (batch_size,) - Normalized V-grade (0-1)
-            angle: (batch_size,) - Normalized wall angle (0-1)
-            labels: (batch_size, seq_len) - Target holds (for training)
-        """
-        # 1. Embed holds and conditions (unchanged)
+        # 1. Embed holds and conditions
         x = self.embedding(input_ids) * (self.d_model ** 0.5)
         grade_emb = self.grade_embed(grade.unsqueeze(-1))
         angle_emb = self.angle_embed(angle.unsqueeze(-1))
         x = x + grade_emb.unsqueeze(1) + angle_emb.unsqueeze(1)
         x = x.transpose(0, 1)  # (seq_len, batch, d_model)
 
-        # 2. Generate proper masks
+        # 2. Generate masks
+        src_pad_mask = (input_ids == PAD_TOKEN_ID) if input_ids is not None else None
+
         if labels is not None:
-            # For training (teacher forcing)
+            # Training mode (teacher forcing)
             tgt_seq_len = labels.size(1)
-
-            # Causal mask for decoder (prevents peeking ahead)
             tgt_mask = self.transformer.generate_square_subsequent_mask(tgt_seq_len).to(x.device)
-
-            # Padding mask for encoder
-            src_pad_mask = (input_ids == PAD_TOKEN_ID)
 
             # Prepare decoder input
             decoder_input = torch.cat([
@@ -66,7 +56,6 @@ class Setter(nn.Module):
             decoder_emb = self.embedding(decoder_input) * (self.d_model ** 0.5)
             decoder_emb = decoder_emb.transpose(0, 1)
 
-            # Forward pass with masks
             out = self.transformer(
                 src=x,
                 tgt=decoder_emb,
@@ -75,11 +64,12 @@ class Setter(nn.Module):
                 memory_key_padding_mask=src_pad_mask,
             )
         else:
-            # For inference (autoregressive)
+            # Inference mode - key fix here
             out = self.transformer(
                 src=x,
-                tgt=None,
-                src_key_padding_mask=(input_ids == PAD_TOKEN_ID),
+                tgt=x,  # Use src as tgt for decoder-free generation
+                src_key_padding_mask=src_pad_mask,
+                tgt_key_padding_mask=src_pad_mask,
             )
 
         return self.fc_out(out.transpose(0, 1))
