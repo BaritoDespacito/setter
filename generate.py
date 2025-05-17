@@ -4,7 +4,7 @@ from setter import Setter
 from torch.utils.data import Dataset
 
 
-def generate_route(model, grade, angle, max_length=50, device="cpu"):
+def generate_route(model, grade, angle, max_length=50, temperature=0.8, device="cpu"):
     model.eval()
 
     # Normalize inputs
@@ -25,7 +25,8 @@ def generate_route(model, grade, angle, max_length=50, device="cpu"):
                 labels=None
             )
 
-        next_token = logits.argmax(-1)[:, -1].unsqueeze(1)
+        probs = torch.softmax(logits[:, -1] / temperature, dim=-1)
+        next_token = torch.multinomial(probs, num_samples=1)  # Random sample
         input_ids = torch.cat([input_ids, next_token], dim=1)
 
         if next_token.item() == END_TOKEN_ID:
