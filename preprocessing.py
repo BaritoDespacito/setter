@@ -7,7 +7,7 @@ from transformers import AutoTokenizer, DataCollatorForSeq2Seq
 
 dataset = load_dataset("ilsenatorov/kilterboard", split="train")
 dataset = dataset.train_test_split(test_size=0.2)
-print(dataset["train"][0])
+# print(dataset["train"][0])
 
 # SPECIAL TOKENS
 START_TOKEN = "<START>"
@@ -107,10 +107,10 @@ train_dataset = KilterDataset(dataset["train"])
 test_dataset = KilterDataset(dataset["test"])
 
 sample = train_dataset[0]
-print("Input IDs:", sample["input_ids"])
-print("Labels:", sample["labels"])
-print("Grade (normalized):", sample["grade"])
-print("Angle (normalized):", sample["angle"])
+# print("Input IDs:", sample["input_ids"])
+# print("Labels:", sample["labels"])
+# print("Grade (normalized):", sample["grade"])
+# print("Angle (normalized):", sample["angle"])
 
 train_loader = DataLoader(
     train_dataset,
@@ -120,9 +120,9 @@ train_loader = DataLoader(
 )
 
 batch = next(iter(train_loader))
-print("Batch input_ids shape:", batch["input_ids"].shape)
-print("Batch labels shape:", batch["labels"].shape)
-print("Batch grades:", batch["grade"])
-print("Batch angles:", batch["angle"])
-print("Max ID in batch:", batch["input_ids"].max().item())
-print("Min ID in batch:", batch["input_ids"].min().item())
+# print("Batch input_ids shape:", batch["input_ids"].shape)
+# print("Batch labels shape:", batch["labels"].shape)
+# print("Batch grades:", batch["grade"])
+# print("Batch angles:", batch["angle"])
+# print("Max ID in batch:", batch["input_ids"].max().item())
+# print("Min ID in batch:", batch["input_ids"].min().item())

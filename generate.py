@@ -2,6 +2,7 @@ import torch
 from PIL import Image, ImageDraw
 from preprocessing import parseRow, TYPE_TO_TOKEN, START_TOKEN_ID, END_TOKEN_ID, PAD_TOKEN_ID
 from setter import Setter
+import argparse
 from torch.utils.data import Dataset
 
 TYPE_TO_COLOR = {
@@ -100,12 +101,20 @@ def drawClimb(holds):
     img.show()
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("grade", type=int, help="Grade of the route (V1-V16)")
+    parser.add_argument("angle", type=int, help="Angle of the route (0-70 degrees)")
+    args = parser.parse_args()
+
+    print(f"Generating climb... (Grade: {args.grade}, Angle: {args.angle})")
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    print('Using device:', device)
     # device = "cpu"
     model = Setter(vocab_size=16000).to(device)
     model.load_state_dict(torch.load("kilter_setter_epoch_9.pt"))
 
-    tokens = generate_route(model, grade=5, angle=40, device=device)
+    tokens = generate_route(model, grade=args.grade, angle=args.angle, device=device)
     climb = decode_holds(tokens)
 
     print("Generated climb:", " → ".join(climb))
