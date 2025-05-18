@@ -70,33 +70,43 @@ def drawClimb(holds):
     for hold in holds:
         if hold == "[START]":
             continue
+        elif hold == "[END]":
+            break
         else:
             hold_id = int(hold[1:hold.index("r")])
             hold_type = int(hold[hold.index("r") + 1:])
             # print("hold_id:", hold_id, "hold_type:", hold_type)
-            if 1090 <= hold_id <= 1395:
+            if 1090 <= hold_id <= 1395: # bolt ons
                 hold_id -= 1090
                 x, y = (hold_id % 17) * 71 + 75, 1413 - ((hold_id // 17) * 71) - 135
-                print("hold_id:", hold_id, "x:", x, "y:", y)
+                # print("hold_id:", hold_id, "x:", x, "y:", y)
+                # print(hold_id % 17, hold_id // 17)
+                draw.circle((x, y), 35, outline=TYPE_TO_COLOR[hold_type], width=7)
+            elif 1448 <= hold_id <= 1465: # kickboard footholds
+                hold_id -= 1448
+                x, y = (hold_id % 18) * 71 + 36, 1385
+                draw.circle((x, y), 25, outline=TYPE_TO_COLOR[hold_type], width=6)
+            elif 1466 <= hold_id <= 1600: # footholds
+                hold_id -= 1466
+                x, y = (hold_id % 9) * 142 + 35 + ((hold_id // 9) % 2) * 71, 1413 - ((hold_id // 9) * 71) - 170
+                draw.circle((x, y), 25, outline=TYPE_TO_COLOR[hold_type], width=6)
+            elif 1073 <= hold_id <= 1089: # kickboard bolt ons
+                hold_id -= 1073
+                x, y = 1284 - ((hold_id % 17) * 71 + 75), 1349
+                # print("hold_id:", hold_id, "x:", x, "y:", y)
                 print(hold_id % 17, hold_id // 17)
                 draw.circle((x, y), 35, outline=TYPE_TO_COLOR[hold_type], width=7)
-            else:
-                x, y = 1, 1
-
-
-    # draw.circle((100, 100), 30, fill="green", outline="black", width=10)
 
     img.show()
 
 if __name__ == "__main__":
-    # device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     # device = "cpu"
-    # model = Setter(vocab_size=16000).to(device)
-    # model.load_state_dict(torch.load("kilter_setter_epoch_9.pt"))
+    model = Setter(vocab_size=16000).to(device)
+    model.load_state_dict(torch.load("kilter_setter_epoch_9.pt"))
 
-    # tokens = generate_route(model, grade=5, angle=40, device=device)
-    # climb = decode_holds(tokens)
+    tokens = generate_route(model, grade=5, angle=40, device=device)
+    climb = decode_holds(tokens)
 
-    climb = ['[START]', 'p1100r14', 'p1101r14', 'p1116r14', 'p1117r14', 'p1111r15', 'p1114r12', 'p1147r12', 'p1200r13', 'p1236r13', 'p1286r13', 'p1340r13', 'p1391r14', 'p1455r15', 'p1457r15', 'p1462r15', 'p1477r15', 'p1516r15', 'p1513r15', 'p1553r15', 'p1518r15', 'p1521r15', 'p1533r15', 'p1508r15', 'p1533r15', 'p1530r15', 'p1546r14', 'p1523r13', 'p1536r15', 'p1504r15', 'p1525r15', 'p1532r15', 'p1534r15', 'p1547r15', 'p1534r15', 'p1541r13', 'p1541r13', 'p1561r15', 'p1215r13', 'p1529r15', 'p1129r15', 'p1512r12', 'p1561r13', 'p1506r15', 'p1552r13', 'p1559r13', 'p1535r15', 'p1242r13', 'p1556r15', 'p1541r15', 'p1517r15', 'p1539r15', 'p1533r15', 'p1522r15', 'p1541r13']
     print("Generated climb:", " → ".join(climb))
     drawClimb(climb)
