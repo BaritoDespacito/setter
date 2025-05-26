@@ -22,7 +22,7 @@ def generate():
 
         try:
             model = Setter(vocab_size=16000).to('cpu')
-            model.load_state_dict(torch.load("../kilter_setter_epoch_9.pt"))
+            model.load_state_dict(torch.load("setter/flask_stuff/kilter_setter_epoch_9.pt"))
 
             tokens = generate_route(model, grade=grade, angle=angle)
             climb = decode_holds(tokens)
