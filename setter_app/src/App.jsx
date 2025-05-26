@@ -2,11 +2,12 @@ import { useState } from 'react'
 import reactLogo from './assets/react.svg'
 import viteLogo from '/vite.svg'
 import './App.css'
+import axios from 'axios';
 
 function App() {
 
-    const [grade, setGrade] = useState(-1);
-    const [angle, setAngle] = useState(-1);
+    const [grade, setGrade] = useState(1);
+    const [angle, setAngle] = useState(0);
 
     const gradeOptions = [
       { label: "V1", value: 1 },
@@ -57,46 +58,28 @@ function App() {
         console.log('grade', grade, 'angle', angle)
         try {
             console.log("Generating...");
-          // Load the ONNX model
-          const session = await window.ort.InferenceSession.create(
-              '/models/model.onnx',
-              { executionProviders: ['wasm'] } // Force WASM backend
-          );
 
-          console.log('session created')
+            const resp = await fetch('/api/generate', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    grade: grade,
+                    angle: angle
+                })
+            });
 
-          // Prepare inputs (normalized like in your Python code)
-          const gradeNorm = grade / 17.0;
-          const angleNorm = angle / 70.0;
+            if (!resp.ok) {
+                throw new Error(`HTTP error! Status: ${resp.status}`);
+            }
 
-          const inputIds = new window.ort.Tensor(
-            'int64',
-            new BigInt64Array([4n]), // START_TOKEN_ID = 4
-            [1, 1]
-          );
-
-          console.log(inputIds.dims);
-
-          const gradeTensor = new window.ort.Tensor('float32', new Float32Array([gradeNorm]), [1]);
-          const angleTensor = new window.ort.Tensor('float32', new Float32Array([angleNorm]), [1]);
-
-          console.log(gradeTensor, angleTensor, 'tensors created')
-
-          // Run inference
-          const { logits } = await session.run({
-            input_ids: inputIds,
-            grade: gradeTensor,
-            angle: angleTensor,
-          });
-
-          console.log("Logits:", logits.data);
-
-          // Process output (convert token IDs to hold positions)
-          const tokenIds = Array.from(logits.data).map(x => Number(x));
-          console.log("Token IDs:", tokenIds);
-
+            const data = await resp.json();
+            console.log("Response:", data);
+            
+            return data;
         } catch (error) {
-          console.error("Generation failed:", error);
+            console.error("Generation failed:", error);
         } finally {
           // setLoading(false);
         }
