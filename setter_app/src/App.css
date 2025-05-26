@@ -33,6 +33,13 @@
   }
 }
 
+.header {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    /*height: 5em;*/
+}
 .card {
   padding: 2em;
 }
