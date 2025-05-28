@@ -4,6 +4,7 @@ import wasm from 'vite-plugin-wasm';
 import legacy from '@vitejs/plugin-legacy';
 
 export default defineConfig({
+  base: "/setter",
   plugins: [
     react(),
     wasm(),
