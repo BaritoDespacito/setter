@@ -1,6 +1,11 @@
 import torch
 from setter import Setter
 import argparse
+from PIL import Image, ImageDraw
+import json
+import numpy
+import base64
+import io
 
 TYPE_TO_TOKEN = {
     12: 0,
@@ -68,6 +73,44 @@ def decode_holds(token_ids):
             type_map = {v: k for k, v in TYPE_TO_TOKEN.items()}
             holds.append(f"p{hold_id}r{type_map[hold_type]}")
     return holds
+
+def drawClimb(holds):
+    """Converts hold strings to a visual representation."""
+    imgTemp = Image.open("kilterboardImg.jpg")
+    img = imgTemp.copy()
+    draw = ImageDraw.Draw(img)
+
+    for hold in holds:
+        if hold == "[START]":
+            continue
+        elif hold == "[END]":
+            break
+        else:
+            hold_id = int(hold[1:hold.index("r")])
+            hold_type = int(hold[hold.index("r") + 1:])
+            # print("hold_id:", hold_id, "hold_type:", hold_type)
+            if 1090 <= hold_id <= 1395: # bolt ons
+                hold_id -= 1090
+                x, y = (hold_id % 17) * 71 + 75, 1413 - ((hold_id // 17) * 71) - 135
+                # print("hold_id:", hold_id, "x:", x, "y:", y)
+                # print(hold_id % 17, hold_id // 17)
+                draw.circle((x, y), 35, outline=TYPE_TO_COLOR[hold_type], width=7)
+            elif 1448 <= hold_id <= 1465: # kickboard footholds
+                hold_id -= 1448
+                x, y = (hold_id % 18) * 71 + 36, 1385
+                draw.circle((x, y), 25, outline=TYPE_TO_COLOR[hold_type], width=6)
+            elif 1466 <= hold_id <= 1600: # footholds
+                hold_id -= 1466
+                x, y = (hold_id % 9) * 142 + 35 + ((hold_id // 9) % 2) * 71, 1413 - ((hold_id // 9) * 71) - 170
+                draw.circle((x, y), 25, outline=TYPE_TO_COLOR[hold_type], width=6)
+            elif 1073 <= hold_id <= 1089: # kickboard bolt ons
+                hold_id -= 1073
+                x, y = 1284 - ((hold_id % 17) * 71 + 75), 1349
+                # print("hold_id:", hold_id, "x:", x, "y:", y)
+                print(hold_id % 17, hold_id // 17)
+                draw.circle((x, y), 35, outline=TYPE_TO_COLOR[hold_type], width=7)
+
+    return img
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

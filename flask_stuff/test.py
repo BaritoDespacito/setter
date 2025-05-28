@@ -5,4 +5,4 @@ resp = requests.post(
     json={"grade": 5, "angle": 40}
 )
 
-print(resp.text)
+print(resp.blob())

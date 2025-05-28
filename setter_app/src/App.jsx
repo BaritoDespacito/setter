@@ -2,12 +2,13 @@ import { useState } from 'react'
 import reactLogo from './assets/react.svg'
 import viteLogo from '/vite.svg'
 import './App.css'
-import axios from 'axios';
 
 function App() {
 
     const [grade, setGrade] = useState(1);
     const [angle, setAngle] = useState(0);
+
+    const [img, setImg] = useState(null);
 
     const gradeOptions = [
       { label: "V1", value: 1 },
@@ -47,10 +48,10 @@ function App() {
     ];
 
     const handleChangeGrade = (event) => {
-    setGrade(event.target.value);
+        setGrade(event.target.value);
     }
     const handleChangeAngle = (event) => {
-    setAngle(event.target.value);
+        setAngle(event.target.value);
     }
 
     const handleGenerate = async () => {
@@ -74,10 +75,10 @@ function App() {
                 throw new Error(`HTTP error! Status: ${resp.status}`);
             }
 
-            const data = await resp.json();
-            console.log("Response:", data);
-            
-            return data;
+            console.log("response received");
+            const imageBlob = await resp.blob();
+            const url = URL.createObjectURL(imageBlob);
+            setImg(url);
         } catch (error) {
             console.error("Generation failed:", error);
         } finally {
@@ -117,6 +118,7 @@ function App() {
             <button onClick={handleGenerate}>
                 Generate
             </button>
+            <img src={img}/>
         </>
     )
 }

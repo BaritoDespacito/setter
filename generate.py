@@ -4,6 +4,8 @@ from preprocessing import parseRow, TYPE_TO_TOKEN, START_TOKEN_ID, END_TOKEN_ID,
 from setter import Setter
 import argparse
 from torch.utils.data import Dataset
+import datetime
+import os
 
 TYPE_TO_COLOR = {
     12: "lime",
@@ -99,6 +101,10 @@ def drawClimb(holds):
                 draw.circle((x, y), 35, outline=TYPE_TO_COLOR[hold_type], width=7)
 
     img.show()
+    # print(img.tobytes())
+    img.save(os.path.join(datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + "_climb.png"))
+    print(os.path.join(datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + "_climb.png"))
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
