@@ -60,15 +60,15 @@ function App() {
         try {
             console.log("Generating...");
 
-            const resp = await fetch('https:BaritoDespacito.pythonanywhere.com/generate', {
-                method: 'POST',
+            const resp = await fetch('https:BaritoDespacito.pythonanywhere.com/test', {
+                method: 'GET',
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({
-                    grade: grade,
-                    angle: angle
-                })
+                // body: JSON.stringify({
+                //     grade: grade,
+                //     angle: angle
+                // })
             });
 
             if (!resp.ok) {
@@ -76,6 +76,7 @@ function App() {
             }
 
             console.log("response received");
+            console.log("response", resp.json().data);
             const imageBlob = await resp.blob();
             const url = URL.createObjectURL(imageBlob);
             setImg(url);
