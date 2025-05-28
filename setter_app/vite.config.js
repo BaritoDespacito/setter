@@ -19,13 +19,5 @@ export default defineConfig({
     fs: {
       strict: false, // Allow serving files from root
     },
-    proxy: {
-      '/api': {
-        target: 'https://baritodespacito.pythonanywhere.com',
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api/, ''),
-        secure: false
-      }
-    },
   },
 });

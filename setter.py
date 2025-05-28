@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-from transformers import AutoConfig, AutoModelForSeq2SeqLM
 
 # SPECIAL TOKENS
 START_TOKEN = "<START>"

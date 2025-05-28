@@ -60,7 +60,7 @@ function App() {
         try {
             console.log("Generating...");
 
-            const resp = await fetch('/api/generate', {
+            const resp = await fetch('https:BaritoDespacito.pythonanywhere.com/generate', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
