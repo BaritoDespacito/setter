@@ -11,6 +11,7 @@ function App() {
     const [angle, setAngle] = useState(0);
 
     const [img, setImg] = useState(null);
+    const [error, setError] = useState(null);
     const [loading, setLoading] = useState(false);
 
     const gradeOptions = [
@@ -87,6 +88,7 @@ function App() {
             // setLoading(false);
         } catch (error) {
             console.error("Generation failed:", error);
+            setError("Failed to generate image. Please try again.");
         } finally {
           setLoading(false);
         }
@@ -124,7 +126,11 @@ function App() {
             <div className={"imgFill"}>
                 {loading ?
                     <l-quantum size="75" speed="1.75" color="white"></l-quantum> :
-                    <div>{img ? <img src={img} className={"climbImg"}/> : <p>Click on generate to create a climb.</p>}</div>
+                    <div>
+                        {img ? <img src={img} className={"climbImg"}/> :
+                            <div>{error ? <p>{error}</p> : <p>Click the generate button to create a climb.</p>}</div>
+                        }
+                    </div>
                 }
             </div>
         </div>
