@@ -33,6 +33,14 @@
   }
 }
 
+.wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+}
+
 .header {
     display: flex;
     align-items: center;
@@ -41,9 +49,38 @@
     /*height: 5em;*/
 }
 .card {
+  width: 15em;
   padding: 2em;
+  flex-direction: row;
+  justify-content: space-evenly;
+  /*border-style: solid;*/
 }
 
-.read-the-docs {
-  color: #888;
+.inputLabel {
+  font-size: 1.2em;
+  margin: 0.5em;
+}
+
+.generateButton {
+  /*background-color: #61dafb;*/
+  color: white;
+  border: none;
+  padding: 0.5em 1em;
+  font-size: 1.2em;
+  cursor: pointer;
+  border-radius: 0.5em;
+  margin: 1em;
+}
+
+.climbImg {
+  height: 100%;
+    width: 100%;
+}
+
+.imgFill {
+  height: 38em;
+  width: 35em;
+  padding: 1.5em;
+  border-color: black;
+  /*border-style: solid;*/
 }

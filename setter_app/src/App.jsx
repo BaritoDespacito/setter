@@ -1,14 +1,17 @@
 import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from '/vite.svg'
+import logo from './assets/logo.svg'
 import './App.css'
+import {quantum} from 'ldrs'
 
 function App() {
+
+    quantum.register()
 
     const [grade, setGrade] = useState(1);
     const [angle, setAngle] = useState(0);
 
     const [img, setImg] = useState(null);
+    const [loading, setLoading] = useState(false);
 
     const gradeOptions = [
       { label: "V1", value: 1 },
@@ -59,16 +62,17 @@ function App() {
         console.log('grade', grade, 'angle', angle)
         try {
             console.log("Generating...");
+            setLoading(true);
 
-            const resp = await fetch('https:BaritoDespacito.pythonanywhere.com/test', {
-                method: 'GET',
+            const resp = await fetch('https://BaritoDespacito.pythonanywhere.com/generate', {
+                method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                // body: JSON.stringify({
-                //     grade: grade,
-                //     angle: angle
-                // })
+                body: JSON.stringify({
+                    grade: grade,
+                    angle: angle
+                })
             });
 
             if (!resp.ok) {
@@ -76,30 +80,26 @@ function App() {
             }
 
             console.log("response received");
-            console.log("response", resp.json().data);
+            // console.log("response", resp.json().data);
             const imageBlob = await resp.blob();
             const url = URL.createObjectURL(imageBlob);
             setImg(url);
+            // setLoading(false);
         } catch (error) {
             console.error("Generation failed:", error);
         } finally {
-          // setLoading(false);
+          setLoading(false);
         }
     }
 
     return (
-        <>
+        <div className={"wrapper"}>
             <div>
-                <a href="https://vite.dev" target="_blank">
-                    <img src={viteLogo} className="logo" alt="Vite logo" />
-                </a>
-                <a href="https://react.dev" target="_blank">
-                    <img src={reactLogo} className="logo react" alt="React logo" />
-                </a>
+                <img src={logo} className="logo" alt={"Setter logo"} />
             </div>
             <h1 className="header">setter</h1>
             <div className="card">
-                <label>
+                <label className={"inputLabel"}>
                     Grade:
                     <select value={grade} onChange={handleChangeGrade}>
                         {gradeOptions.map((option) => (
@@ -107,7 +107,7 @@ function App() {
                         ))}
                     </select>
                 </label>
-                <label>
+                <label className={"inputLabel"}>
                     Angle:
                     <select value={angle} onChange={handleChangeAngle}>
                         {angleOptions.map((option) => (
@@ -116,11 +116,18 @@ function App() {
                     </select>
                 </label>
             </div>
-            <button onClick={handleGenerate}>
+            <div>
+                <button onClick={handleGenerate} className={"generateButton"}>
                 Generate
-            </button>
-            <img src={img}/>
-        </>
+                </button>
+            </div>
+            <div className={"imgFill"}>
+                {loading ?
+                    <l-quantum size="75" speed="1.75" color="white"></l-quantum> :
+                    <div>{img ? <img src={img} className={"climbImg"}/> : <p>Click on generate to create a climb.</p>}</div>
+                }
+            </div>
+        </div>
     )
 }
 
