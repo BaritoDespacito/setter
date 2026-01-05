@@ -44,9 +44,9 @@ tokenizer.pad_token_id = PAD_TOKEN_ID
 def parseRow(row, min_truncate=1):
     """
     Parses hold sequence from dataset into tokens.
-    :param min_truncate: minimum holds to truncate the sequence at
+    :param min_truncate: minimum holds to truncate the sequence at (for data augmentation)
     :param row: a list representing a row in the dataset
-    :return: a dict, containing the input sequence of holds, the next hold, angle and grade
+    :return: a dict, containing the input sequence of holds, the full sequence labels, angle and grade
     """
     holds = re.findall(r'p(\d+)r(\d+)', row['text'])
     sequence = [START_TOKEN_ID]
@@ -55,11 +55,16 @@ def parseRow(row, min_truncate=1):
         sequence.append(hold_token)
     sequence.append(END_TOKEN_ID)
 
-    truncate_at = random.randint(min_truncate, len(holds) - 1)
-    input_ids = sequence[:truncate_at]
-    # print("input_ids:", input_ids)
-    labels = [sequence[truncate_at]]
-    # print("labels:", labels)
+    # Optional: Add data augmentation by sometimes truncating the input
+    # This teaches the model to continue partial routes
+    if random.random() < 0.3 and len(holds) > 3:  # 30% of time, truncate for augmentation
+        truncate_at = random.randint(2, len(holds) - 1)
+        input_ids = sequence[:truncate_at]
+        labels = sequence[truncate_at:]  # Predict REST of sequence
+    else:
+        # Most of the time, generate full sequence from scratch
+        input_ids = [START_TOKEN_ID]
+        labels = sequence[1:]  # Predict entire route after START token
 
     angle = float(row['angle'])/70.0
     grade = (float(row['difficulty'])-10.0)/21.0
