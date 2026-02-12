@@ -4,4 +4,6 @@ setter takes in a desired grade (V-scale) and angle and generates a route on the
 setter was created as my senior project at Phillips Exeter Academy. Starting with zero formal experience in neural networks, I used documentation and experimentation to independently design setter.
 I presented setter at the end of my senior year to students and faculty at Phillips Exeter.
 
+NOTE: setter is a work-in-progress and is not at full functionality yet. Contact me to learn more about what I'm working on now!
+
 For inquiries please contact me at vasavathiratham@gmail.com
