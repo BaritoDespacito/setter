@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.python-version
+
+# Generated route images (debug output from generate.py / drawClimb)
+*_climb.png
+flask_stuff/climbs/
+
+# Node / frontend
+node_modules/
+setter_app/node_modules/
+setter_app/dist/
+
+# IDE / OS
+.idea/
+.DS_Store
+
+# Local env
+.env

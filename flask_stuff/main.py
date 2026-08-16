@@ -1,18 +1,14 @@
-
-# A very simple Flask Hello World app for you to get started with...
-
 from flask import Flask, request, jsonify, send_file
-# from flask_cors import CORS
+from flask_cors import CORS
 import torch
-from generate import generate_route, decode_holds, drawClimb
-from setter import Setter
+from generate import generate_route, decode_holds, drawClimb, MIN_GRADE, MAX_GRADE, MIN_ANGLE, MAX_ANGLE
+from setter import Setter, VOCAB_SIZE, load_checkpoint_state_dict
 import datetime
 import os
 import logging
-import sys
-from flask import Flask, request, jsonify, send_file, abort
 
 app = Flask(__name__)
+CORS(app)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -20,7 +16,7 @@ logging.basicConfig(level=logging.INFO)
 # Define required resources
 required_resources = {
     "kilterboardImg.jpg": os.path.join(os.path.dirname(__file__), "kilterboardImg.jpg"),
-    "model_file": os.path.join(os.path.dirname(__file__), "kilter_setter_epoch_9.pt")
+    "model_file": os.path.join(os.path.dirname(__file__), "kilter_setter_best.pt")
 }
 
 # Ensure the climbs directory exists
@@ -41,7 +37,7 @@ if "kilterboardImg.jpg" in missing_resources:
         os.path.join(os.path.dirname(__file__), "mysite", "kilterboardImg.jpg"),
         "kilterboardImg.jpg"
     ]
-    
+
     for path in alt_paths:
         if os.path.exists(path):
             logging.info(f"Found kilterboardImg.jpg at alternative location: {path}")
@@ -56,6 +52,18 @@ if not resources_available:
     logging.error(f"Missing: {', '.join(missing_resources)}")
     logging.error("Please ensure all required files are available before continuing.")
 
+# Load the model once at startup rather than on every request - reloading a ~60MB
+# checkpoint per request is what was making this endpoint trivial to overwhelm.
+model = None
+if resources_available:
+    device = "cpu"
+    model = Setter(vocab_size=VOCAB_SIZE).to(device)
+    model_path = required_resources["model_file"]
+    model.load_state_dict(load_checkpoint_state_dict(model_path, map_location=device))
+    model.eval()
+    logging.info("Model loaded and ready.")
+
+
 @app.route('/')
 def hello_world():
     return 'Hello from Flask yippee!'
@@ -64,49 +72,50 @@ def hello_world():
 def test():
     return 'hello from test yippee'
 
-@app.route('/generate', methods=['POST', 'GET'])
+@app.route('/generate', methods=['POST'])
 def generate():
-    if request.method == 'POST':
-        # Check if all required resources are available
-        if not resources_available:
-            error_message = f"Server is missing required resources: {', '.join(missing_resources)}"
-            logging.error(error_message)
-            return jsonify({
-                'error': error_message,
-                'details': "Please ensure all required files are available.",
-                'missing_files': missing_resources
-            }), 503  # Service Unavailable
+    if not resources_available or model is None:
+        error_message = f"Server is missing required resources: {', '.join(missing_resources)}"
+        logging.error(error_message)
+        return jsonify({
+            'error': error_message,
+            'details': "Please ensure all required files are available.",
+            'missing_files': missing_resources
+        }), 503  # Service Unavailable
 
-        data = request.get_json()
-        grade = data.get('grade')
-        angle = data.get('angle')
+    data = request.get_json(silent=True) or {}
+    grade = data.get('grade')
+    angle = data.get('angle')
 
-        if grade is None or angle is None:
-            return jsonify({'error': 'Missing grade or angle parameter.'}), 400
+    if grade is None or angle is None:
+        return jsonify({'error': 'Missing grade or angle parameter.'}), 400
 
-        try:
-            model = Setter(vocab_size=16000).to('cpu')
-            # Fix model path to use the correct local path
-            model_path = os.path.join(os.path.dirname(__file__), "kilter_setter_epoch_9.pt")
-            model.load_state_dict(torch.load(model_path))
+    # Reject anything that isn't a plain integer (bool is an int subclass, exclude it too)
+    # before it reaches the model, and enforce the trained grade/angle domain.
+    if isinstance(grade, bool) or isinstance(angle, bool) or not isinstance(grade, int) or not isinstance(angle, int):
+        return jsonify({'error': 'grade and angle must be integers.'}), 400
 
-            tokens = generate_route(model, grade=grade, angle=angle)
-            climb = decode_holds(tokens)
+    if not (MIN_GRADE <= grade <= MAX_GRADE):
+        return jsonify({'error': f'grade must be between {MIN_GRADE} and {MAX_GRADE}.'}), 400
 
-            img = drawClimb(climb)
+    if not (MIN_ANGLE <= angle <= MAX_ANGLE):
+        return jsonify({'error': f'angle must be between {MIN_ANGLE} and {MAX_ANGLE}.'}), 400
 
-            imgName = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + "_climb.png"
-            
-            # Use proper path joining
-            img_path = os.path.join(climbs_dir, imgName)
-            img.save(img_path)
-            
-            return send_file(img_path)
-        except Exception as e:
-            logging.error(f"Error generating climb: {str(e)}", exc_info=True)
-            return jsonify({'error': f"Server error: {str(e)}"}), 500
-    else:
-        return 'generate this is'
+    try:
+        tokens = generate_route(model, grade=grade, angle=angle)
+        climb = decode_holds(tokens)
+
+        img = drawClimb(climb)
+
+        imgName = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + "_climb.png"
+        img_path = os.path.join(climbs_dir, imgName)
+        img.save(img_path)
+
+        return send_file(img_path)
+    except Exception as e:
+        # Log the real error server-side, but don't leak internals to the client.
+        logging.error(f"Error generating climb: {str(e)}", exc_info=True)
+        return jsonify({'error': 'Failed to generate climb.'}), 500
 
 @app.route('/status')
 def status():
@@ -131,5 +140,5 @@ if __name__ == '__main__':
         print("The application may not function correctly without these files.")
         print("Please ensure all required files are available in the correct locations.")
         print("You can check the '/status' endpoint for more information.\n")
-        
-    app.run(debug=True)
+
+    app.run(debug=False)

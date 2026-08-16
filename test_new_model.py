@@ -2,13 +2,13 @@
 Quick test to verify the new model architecture works
 """
 import torch
-from setter import Setter
+from setter import Setter, VOCAB_SIZE
 
 def test_model():
     print("Testing new Setter model architecture...")
 
     # Create model
-    model = Setter(vocab_size=16000, d_model=256, nhead=8, num_layers=6)
+    model = Setter(vocab_size=VOCAB_SIZE, d_model=256, nhead=8, num_layers=6)
     print(f"✓ Model created successfully")
     print(f"  Total parameters: {sum(p.numel() for p in model.parameters()):,}")
 
@@ -17,8 +17,8 @@ def test_model():
     seq_len = 10
     label_len = 15
 
-    input_ids = torch.randint(0, 16000, (batch_size, seq_len))
-    labels = torch.randint(0, 16000, (batch_size, label_len))
+    input_ids = torch.randint(0, VOCAB_SIZE, (batch_size, seq_len))
+    labels = torch.randint(0, VOCAB_SIZE, (batch_size, label_len))
     grade = torch.rand(batch_size)
     angle = torch.rand(batch_size)
 

@@ -1,15 +1,13 @@
 import torch
 import onnxruntime as ort
-from setter import Setter
-
-START_TOKEN_ID = 4
+from setter import Setter, VOCAB_SIZE, START_TOKEN_ID, load_checkpoint_state_dict
 
 
 def main():
     device = "cpu"  # Force CPU for ONNX export (avoid device mismatches)
 
-    model = Setter(vocab_size=16000).to(device)
-    model.load_state_dict(torch.load("kilter_setter_epoch_9.pt", map_location=device))
+    model = Setter(vocab_size=VOCAB_SIZE).to(device)
+    model.load_state_dict(load_checkpoint_state_dict("kilter_setter_best.pt", map_location=device))
     model.eval()
 
     # Create dummy inputs ON THE SAME DEVICE as model

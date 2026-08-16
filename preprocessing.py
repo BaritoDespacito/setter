@@ -1,45 +1,95 @@
-from datasets import load_dataset, DatasetDict
+from datasets import load_dataset, Dataset as HFDataset
+from huggingface_hub import hf_hub_download
 import torch
 from torch.utils.data import Dataset, DataLoader
 import re
 import random
-from transformers import AutoTokenizer, DataCollatorForSeq2Seq
+import sqlite3
+import collections
+from setter import (
+    START_TOKEN,
+    END_TOKEN,
+    PAD_TOKEN,
+    START_TOKEN_ID,
+    END_TOKEN_ID,
+    PAD_TOKEN_ID,
+    TYPE_TO_TOKEN,
+    NUM_HOLDS_NORM,
+)
 
-dataset = load_dataset("ilsenatorov/kilterboard", split="train")
-dataset = dataset.train_test_split(test_size=0.2)
-# print(dataset["train"][0])
+# Pinned to specific dataset commits so training runs are reproducible even if the
+# upstream HF datasets are later updated. Re-pin deliberately if you want newer data.
+DATASET_REVISION = "acb78b6cdde080b7eab1182c51313696197a2938"
+SECONDARY_DATASET_REVISION = "1178d1faecb8dc60bf5e80dcd6e71c553984f92c"
+VILIN_DATASET_REVISION = "8a5a0f11675494c3615c2c96815af6bde93235f9"
+DATASET_SPLIT_SEED = 42
 
-# SPECIAL TOKENS
-START_TOKEN = "<START>"
-END_TOKEN = "<END>"
-PAD_TOKEN = "<PAD>"
-START_TOKEN_ID = 4
-END_TOKEN_ID = 5
-PAD_TOKEN_ID = 6
+_PROMPT_DIFFICULTY_ANGLE_RE = re.compile(r'difficulty (\d+) and angle (\d+)')
+_ROUTE_STRING_RE = re.compile(r'^(?:p\d+r\d+)+$')
 
-# HOLD TYPE TOKENS
-"""
-12, green, start
-13, cyan, handholds
-14, purple, finish
-15, orange, footholds
-"""
-TYPE_TO_TOKEN = {
-    12: 0,
-    13: 1,
-    14: 2,
-    15: 3,
-}
 
-tokenizer = AutoTokenizer.from_pretrained("t5-small")
-tokenizer.add_special_tokens({
-    "bos_token":  START_TOKEN,
-    "eos_token": END_TOKEN,
-    "pad_token": PAD_TOKEN,
-})
-tokenizer.bos_token_id = START_TOKEN_ID
-tokenizer.eos_token_id = END_TOKEN_ID
-tokenizer.pad_token_id = PAD_TOKEN_ID
+def _load_vilin_pairs():
+    """
+    Vilin97/KilterBoard is a direct export of Kilter's own database (layout_id=1, i.e.
+    the exact board/role scheme this project targets), with 236k+ unique routes pooled
+    across its train/val/test splits - by far the largest and richest of the three
+    sources available. Its own split boundaries aren't used here: everything is pooled
+    and re-split by _load_combined_dataset() below so all three sources share one
+    consistent, reproducible split.
+    """
+    path = hf_hub_download(
+        repo_id="Vilin97/KilterBoard",
+        filename="kilter_splits.sqlite",
+        repo_type="dataset",
+        revision=VILIN_DATASET_REVISION,
+    )
+    conn = sqlite3.connect(path)
+    cur = conn.cursor()
+    pairs = {}
+    for table in ("kilter_train", "kilter_val", "kilter_test"):
+        cur.execute(f"SELECT frames, angle, difficulty_numeric FROM {table} WHERE layout_id=1")
+        for text, angle, difficulty in cur.fetchall():
+            if text and _ROUTE_STRING_RE.match(text) and angle is not None and difficulty is not None:
+                pairs[(text, float(angle))] = float(difficulty)
+    conn.close()
+    return pairs
+
+
+def _load_combined_dataset():
+    """
+    Merges three sources into one deduplicated set, keyed by (route, angle) since
+    difficulty is assigned per angle, not per route alone:
+      - ilsenatorov/kilterboard (69,172 routes, last updated 2024-07)
+      - gabriead/Kilterboard (177,858 routes, uploaded 2025-07, ~78k not in the above)
+      - Vilin97/KilterBoard (236,263 routes pooled across its train/val/test splits,
+        a direct Kilter database export - the largest and most authoritative source)
+    Later sources overwrite earlier ones' difficulty on conflicts, since Vilin's
+    crowd-averaged difficulty_numeric is the most precise value available. The three
+    sources overlap heavily but each contributes real unique routes; using all three
+    gets ~256k unique (route, angle) pairs vs ~236k from Vilin alone.
+    """
+    primary = load_dataset("ilsenatorov/kilterboard", split="train", revision=DATASET_REVISION)
+    secondary = load_dataset("gabriead/Kilterboard", split="train", revision=SECONDARY_DATASET_REVISION)
+
+    combined = {}
+    for row in primary:
+        combined[(row["text"], float(row["angle"]))] = row["difficulty"]
+    for row in secondary:
+        match = _PROMPT_DIFFICULTY_ANGLE_RE.search(row["input"])
+        if not match:
+            continue
+        difficulty, angle = int(match.group(1)), int(match.group(2))
+        combined[(row["target"], float(angle))] = float(difficulty)
+    combined.update(_load_vilin_pairs())
+
+    return HFDataset.from_list([
+        {"text": text, "angle": angle, "difficulty": difficulty}
+        for (text, angle), difficulty in combined.items()
+    ])
+
+
+dataset = _load_combined_dataset()
+dataset = dataset.train_test_split(test_size=0.2, seed=DATASET_SPLIT_SEED)
 
 def parseRow(row, min_truncate=1):
     """
@@ -48,11 +98,18 @@ def parseRow(row, min_truncate=1):
     :param row: a list representing a row in the dataset
     :return: a dict, containing the input sequence of holds, the full sequence labels, angle and grade
     """
-    holds = re.findall(r'p(\d+)r(\d+)', row['text'])
+    raw_holds = re.findall(r'p(\d+)r(\d+)', row['text'])
+    holds = []
     sequence = [START_TOKEN_ID]
-    for hold in holds:
-        hold_token = int(hold[0]) * 10 + TYPE_TO_TOKEN[int(hold[1])]
+    for hold_id, hold_type in raw_holds:
+        hold_type = int(hold_type)
+        if hold_type not in TYPE_TO_TOKEN:
+            # Unrecognized hold-type role in the raw data; skip rather than crash the
+            # whole dataset load on one malformed row.
+            continue
+        hold_token = int(hold_id) * 10 + TYPE_TO_TOKEN[hold_type]
         sequence.append(hold_token)
+        holds.append((hold_id, hold_type))
     sequence.append(END_TOKEN_ID)
 
     # Optional: Add data augmentation by sometimes truncating the input
@@ -74,6 +131,9 @@ def parseRow(row, min_truncate=1):
         'labels': torch.tensor(labels, dtype=torch.long),
         'angle': torch.tensor(angle),
         'grade': torch.tensor(grade),
+        # Full route hold count (independent of the truncation augmentation above),
+        # normalized for the auxiliary length-prediction head in training.py.
+        'num_holds': torch.tensor(len(holds) / NUM_HOLDS_NORM),
     }
 
 def collate_fn(batch):
@@ -85,16 +145,17 @@ def collate_fn(batch):
     padded_batch = {
         "input_ids": torch.nn.utils.rnn.pad_sequence(
             [x["input_ids"] for x in batch],
-            padding_value=tokenizer.pad_token_id,
+            padding_value=PAD_TOKEN_ID,
             batch_first=True
         ),
         "labels": torch.nn.utils.rnn.pad_sequence(
             [x["labels"] for x in batch],
-            padding_value=tokenizer.pad_token_id,
+            padding_value=PAD_TOKEN_ID,
             batch_first=True
         ),
         "grade": torch.stack([x["grade"] for x in batch]),
-        "angle": torch.stack([x["angle"] for x in batch])
+        "angle": torch.stack([x["angle"] for x in batch]),
+        "num_holds": torch.stack([x["num_holds"] for x in batch]),
     }
     return padded_batch
 
@@ -111,23 +172,51 @@ class KilterDataset(Dataset):
 train_dataset = KilterDataset(dataset["train"])
 test_dataset = KilterDataset(dataset["test"])
 
-sample = train_dataset[0]
-# print("Input IDs:", sample["input_ids"])
-# print("Labels:", sample["labels"])
-# print("Grade (normalized):", sample["grade"])
-# print("Angle (normalized):", sample["angle"])
+# Per-example sampling weights, inversely proportional to (the square root of, floored
+# at MIN_BUCKET_SIZE) how common that example's (grade, angle) bucket is. Grade/angle
+# are extremely imbalanced in the raw data (angle=40 alone is a large share of all
+# routes, while rare grade/angle combos have only a handful of examples) - training
+# with plain shuffling barely exposes the model to rare combinations.
+#
+# NOTE: a straight 1/count weighting was tried first and made things *worse* - with
+# WeightedRandomSampler's replacement=True, singleton (count=1) buckets ended up with
+# ~15x the expected draws per epoch of a "fair" pass, so the model just memorized that
+# handful of examples through repetition instead of generalizing (val loss diverged
+# from epoch 2 onward). sqrt() plus a count floor caps that at roughly 4x - enough to
+# meaningfully rebalance exposure without turning rare examples into repeated near-labels.
+#
+# Bucket key rounds difficulty to the nearest integer: Vilin's difficulty_numeric is a
+# continuous crowd-averaged value (e.g. 15.9958), unlike the other two sources' clean
+# integer scale - without rounding, almost every Vilin example would be its own
+# singleton bucket and the weighting would be meaningless. The actual `grade` value fed
+# to the model (see parseRow) stays the precise unrounded float.
+MIN_BUCKET_SIZE = 30
+def _bucket_key(row):
+    return (round(row["difficulty"]), row["angle"])
 
-train_loader = DataLoader(
-    train_dataset,
-    batch_size=32,
-    collate_fn=collate_fn,
-    shuffle=True
-)
+_bucket_counts = collections.Counter(_bucket_key(row) for row in dataset["train"])
+train_sample_weights = [
+    1.0 / (max(_bucket_counts[_bucket_key(row)], MIN_BUCKET_SIZE) ** 0.5)
+    for row in dataset["train"]
+]
 
-batch = next(iter(train_loader))
-# print("Batch input_ids shape:", batch["input_ids"].shape)
-# print("Batch labels shape:", batch["labels"].shape)
-# print("Batch grades:", batch["grade"])
-# print("Batch angles:", batch["angle"])
-# print("Max ID in batch:", batch["input_ids"].max().item())
-# print("Min ID in batch:", batch["input_ids"].min().item())
+if __name__ == "__main__":
+    sample = train_dataset[0]
+    print("Input IDs:", sample["input_ids"])
+    print("Labels:", sample["labels"])
+    print("Grade (normalized):", sample["grade"])
+    print("Angle (normalized):", sample["angle"])
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=32,
+        collate_fn=collate_fn,
+        shuffle=True
+    )
+    batch = next(iter(train_loader))
+    print("Batch input_ids shape:", batch["input_ids"].shape)
+    print("Batch labels shape:", batch["labels"].shape)
+    print("Batch grades:", batch["grade"])
+    print("Batch angles:", batch["angle"])
+    print("Max ID in batch:", batch["input_ids"].max().item())
+    print("Min ID in batch:", batch["input_ids"].min().item())

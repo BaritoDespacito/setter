@@ -1,22 +1,45 @@
+import random
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
-from preprocessing import train_dataset, test_dataset, collate_fn  # Import the datasets directly
-from setter import Setter
+from torch.utils.data import DataLoader, WeightedRandomSampler
+from preprocessing import train_dataset, test_dataset, collate_fn, train_sample_weights
+from setter import Setter, VOCAB_SIZE, PAD_TOKEN_ID
 from tqdm import tqdm
 
 # Constants
 BATCH_SIZE = 32
-EPOCHS = 10
+EPOCHS = 40
 LEARNING_RATE = 1e-4
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+GRAD_CLIP_NORM = 1.0
+LENGTH_LOSS_WEIGHT = 0.1  # weight of the auxiliary length-prediction loss vs. the main CE loss
+SEED = 42
+if torch.cuda.is_available():
+    DEVICE = "cuda"
+elif torch.backends.mps.is_available():
+    DEVICE = "mps"
+else:
+    DEVICE = "cpu"
+
+
+def set_seed(seed):
+    random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
 
 def train():
+    set_seed(SEED)
 
+    # Weighted so rare (grade, angle) combinations are seen roughly as often as common
+    # ones, instead of being drowned out by dominant buckets like angle=40.
+    sampler = WeightedRandomSampler(
+        train_sample_weights, num_samples=len(train_dataset), replacement=True
+    )
     train_loader = DataLoader(
         train_dataset,
         batch_size=BATCH_SIZE,
-        shuffle=True,
+        sampler=sampler,
         collate_fn=collate_fn
     )
 
@@ -26,11 +49,12 @@ def train():
         collate_fn=collate_fn
     )
 
-    vocab_size = 16000 # max id = 1548?, multiply by 10 and add hold type, + special tokens (start, end, pad) + extra for leeway
-
-    model = Setter(vocab_size=vocab_size).to(DEVICE)
-    criterion = nn.CrossEntropyLoss(ignore_index=6)
+    model = Setter(vocab_size=VOCAB_SIZE).to(DEVICE)
+    criterion = nn.CrossEntropyLoss(ignore_index=PAD_TOKEN_ID)
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=1)
+
+    best_val_loss = float("inf")
 
     for epoch in range(EPOCHS):
         model.train()
@@ -43,11 +67,15 @@ def train():
             grade = batch["grade"].to(DEVICE)
             angle = batch["angle"].to(DEVICE)
             labels = batch["labels"].to(DEVICE)
+            num_holds = batch["num_holds"].to(DEVICE)
 
             logits = model(input_ids, grade, angle, labels=labels)
-            loss = criterion(logits.view(-1, vocab_size), labels.view(-1))
+            ce_loss = criterion(logits.reshape(-1, VOCAB_SIZE), labels.reshape(-1))
+            length_loss = nn.functional.mse_loss(model.predict_length(grade, angle), num_holds)
+            loss = ce_loss + LENGTH_LOSS_WEIGHT * length_loss
 
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP_NORM)
             optimizer.step()
             train_loss += loss.item()
 
@@ -60,15 +88,35 @@ def train():
                 grade = batch["grade"].to(DEVICE)
                 angle = batch["angle"].to(DEVICE)
                 labels = batch["labels"].to(DEVICE)
+                num_holds = batch["num_holds"].to(DEVICE)
 
                 logits = model(input_ids, grade, angle, labels=labels)
-                val_loss += criterion(logits.view(-1, vocab_size), labels.view(-1)).item()
+                ce_loss = criterion(logits.reshape(-1, VOCAB_SIZE), labels.reshape(-1))
+                length_loss = nn.functional.mse_loss(model.predict_length(grade, angle), num_holds)
+                val_loss += (ce_loss + LENGTH_LOSS_WEIGHT * length_loss).item()
 
-        print(
-            f"Epoch {epoch + 1} | Train Loss: {train_loss / len(train_loader):.4f} | Val Loss: {val_loss / len(test_loader):.4f}")
+        avg_train_loss = train_loss / len(train_loader)
+        avg_val_loss = val_loss / len(test_loader)
+        print(f"Epoch {epoch + 1} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
+
+        scheduler.step(avg_val_loss)
+
+        checkpoint = {
+            "epoch": epoch,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "train_loss": avg_train_loss,
+            "val_loss": avg_val_loss,
+            "vocab_size": VOCAB_SIZE,
+        }
 
         # Save checkpoint
-        torch.save(model.state_dict(), f"kilter_setter_epoch_{epoch}.pt")
+        torch.save(checkpoint, f"kilter_setter_epoch_{epoch}.pt")
+
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            torch.save(checkpoint, "kilter_setter_best.pt")
+            print(f"  New best val loss ({best_val_loss:.4f}) -> saved kilter_setter_best.pt")
 
 
 if __name__ == "__main__":
