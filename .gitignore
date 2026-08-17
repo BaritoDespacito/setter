@@ -19,3 +19,13 @@ setter_app/dist/
 
 # Local env
 .env
+
+# Training checkpoints: only kilter_setter_best.pt (weights-only "deploy" format) is
+# committed. "latest"/"resume" checkpoints carry optimizer state (~3x larger, over
+# GitHub's 100MB blob limit) and are meant to stay local for resuming training.
+kilter_setter_latest.pt
+kilter_setter_latest_resume.pt
+kilter_setter_best_resume.pt
+flask_stuff/kilter_setter_latest.pt
+flask_stuff/kilter_setter_latest_resume.pt
+flask_stuff/kilter_setter_best_resume.pt

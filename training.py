@@ -101,7 +101,13 @@ def train():
 
         scheduler.step(avg_val_loss)
 
-        checkpoint = {
+        # Two kinds of file: lightweight "deploy" checkpoints (weights only - what
+        # generate.py and Flask load) and full "resume" checkpoints (add optimizer
+        # state + epoch/loss, for continuing training locally). Deploy checkpoints are
+        # small enough to commit to git; GitHub hard-rejects any single blob over 100MB,
+        # and a full checkpoint with Adam's optimizer state is ~3x the weights-only size
+        # - resume checkpoints are gitignored and meant to stay local.
+        resume_checkpoint = {
             "epoch": epoch,
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
@@ -109,13 +115,13 @@ def train():
             "val_loss": avg_val_loss,
             "vocab_size": VOCAB_SIZE,
         }
-
-        # Save checkpoint
-        torch.save(checkpoint, f"kilter_setter_epoch_{epoch}.pt")
+        torch.save(model.state_dict(), "kilter_setter_latest.pt")
+        torch.save(resume_checkpoint, "kilter_setter_latest_resume.pt")
 
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            torch.save(checkpoint, "kilter_setter_best.pt")
+            torch.save(model.state_dict(), "kilter_setter_best.pt")
+            torch.save(resume_checkpoint, "kilter_setter_best_resume.pt")
             print(f"  New best val loss ({best_val_loss:.4f}) -> saved kilter_setter_best.pt")
 
 
