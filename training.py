@@ -1,9 +1,11 @@
+import os
 import random
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, WeightedRandomSampler
 from preprocessing import train_dataset, test_dataset, collate_fn, train_sample_weights
-from setter import Setter, VOCAB_SIZE, PAD_TOKEN_ID
+from setter import Setter, VOCAB_SIZE, PAD_TOKEN_ID, load_checkpoint_state_dict
+from evaluate import run_evaluation
 from tqdm import tqdm
 
 # Constants
@@ -12,7 +14,16 @@ EPOCHS = 40
 LEARNING_RATE = 1e-4
 GRAD_CLIP_NORM = 1.0
 LENGTH_LOSS_WEIGHT = 0.1  # weight of the auxiliary length-prediction loss vs. the main CE loss
+FOOT_FRACTION_LOSS_WEIGHT = 0.1  # weight of the auxiliary foot-fraction loss vs. the main CE loss
+WEIGHT_DECAY = 0.01  # AdamW decoupled weight decay, standard-ish default
+LABEL_SMOOTHING = 0.1  # softens the CE target so the model isn't pushed toward total certainty
 SEED = 42
+
+# If set and the file exists, model weights are warm-started from it (non-strict, so
+# newly added components like coord_embed/foot_fraction_head just keep their fresh
+# random init) instead of training from scratch. The optimizer is always fresh - Adam
+# momentum from a differently-shaped parameter set can't be meaningfully carried over.
+WARM_START_PATH = "kilter_setter_best.pt"
 if torch.cuda.is_available():
     DEVICE = "cuda"
 elif torch.backends.mps.is_available():
@@ -50,8 +61,17 @@ def train():
     )
 
     model = Setter(vocab_size=VOCAB_SIZE).to(DEVICE)
-    criterion = nn.CrossEntropyLoss(ignore_index=PAD_TOKEN_ID)
-    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+
+    if WARM_START_PATH and os.path.exists(WARM_START_PATH):
+        state_dict = torch.load(WARM_START_PATH, map_location=DEVICE, weights_only=True)
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        print(f"Warm-started from {WARM_START_PATH}")
+        print(f"  new (randomly-initialized) params: {missing}")
+        if unexpected:
+            print(f"  ignored unexpected checkpoint keys: {unexpected}")
+
+    criterion = nn.CrossEntropyLoss(ignore_index=PAD_TOKEN_ID, label_smoothing=LABEL_SMOOTHING)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=1)
 
     best_val_loss = float("inf")
@@ -68,11 +88,13 @@ def train():
             angle = batch["angle"].to(DEVICE)
             labels = batch["labels"].to(DEVICE)
             num_holds = batch["num_holds"].to(DEVICE)
+            foot_fraction = batch["foot_fraction"].to(DEVICE)
 
             logits = model(input_ids, grade, angle, labels=labels)
             ce_loss = criterion(logits.reshape(-1, VOCAB_SIZE), labels.reshape(-1))
             length_loss = nn.functional.mse_loss(model.predict_length(grade, angle), num_holds)
-            loss = ce_loss + LENGTH_LOSS_WEIGHT * length_loss
+            foot_loss = nn.functional.mse_loss(model.predict_foot_fraction(grade, angle), foot_fraction)
+            loss = ce_loss + LENGTH_LOSS_WEIGHT * length_loss + FOOT_FRACTION_LOSS_WEIGHT * foot_loss
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP_NORM)
@@ -89,11 +111,13 @@ def train():
                 angle = batch["angle"].to(DEVICE)
                 labels = batch["labels"].to(DEVICE)
                 num_holds = batch["num_holds"].to(DEVICE)
+                foot_fraction = batch["foot_fraction"].to(DEVICE)
 
                 logits = model(input_ids, grade, angle, labels=labels)
                 ce_loss = criterion(logits.reshape(-1, VOCAB_SIZE), labels.reshape(-1))
                 length_loss = nn.functional.mse_loss(model.predict_length(grade, angle), num_holds)
-                val_loss += (ce_loss + LENGTH_LOSS_WEIGHT * length_loss).item()
+                foot_loss = nn.functional.mse_loss(model.predict_foot_fraction(grade, angle), foot_fraction)
+                val_loss += (ce_loss + LENGTH_LOSS_WEIGHT * length_loss + FOOT_FRACTION_LOSS_WEIGHT * foot_loss).item()
 
         avg_train_loss = train_loss / len(train_loader)
         avg_val_loss = val_loss / len(test_loader)
@@ -123,6 +147,11 @@ def train():
             torch.save(model.state_dict(), "kilter_setter_best.pt")
             torch.save(resume_checkpoint, "kilter_setter_best_resume.pt")
             print(f"  New best val loss ({best_val_loss:.4f}) -> saved kilter_setter_best.pt")
+
+    print("\nEvaluating best checkpoint (generation-quality metrics, not just loss)...")
+    model.load_state_dict(load_checkpoint_state_dict("kilter_setter_best.pt", map_location=DEVICE))
+    run_evaluation(model, device=DEVICE, label=f"training run, val_loss={best_val_loss:.4f}",
+                   checkpoint_path="kilter_setter_best.pt", val_loss=best_val_loss)
 
 
 if __name__ == "__main__":

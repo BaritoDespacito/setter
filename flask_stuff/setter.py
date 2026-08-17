@@ -23,6 +23,29 @@ VOCAB_SIZE = 16020
 # a similar numeric range to the grade/angle inputs.
 NUM_HOLDS_NORM = 20.0
 
+# The model is trained on the dataset's raw "difficulty" field (~10-39, e.g. from
+# preprocessing.py's `grade = (difficulty - 10) / 21.0`), NOT on the V-scale number
+# climbers actually think in. generate.py's public API takes a V-grade (0-17+), so it
+# must be converted to a representative raw difficulty before normalizing - passing a
+# V-grade straight into the difficulty-based formula silently asks for the wrong
+# thing (e.g. "V12" would normalize as difficulty=12, which is actually V0).
+# Built from Kilter's own difficulty/V-grade table (Vilin97/KilterBoard's
+# difficulty_grades table), averaged per V-grade and clipped to >=10 - the training
+# data's actual minimum difficulty - so V0 doesn't map to an out-of-distribution value.
+V_GRADE_TO_DIFFICULTY = {
+    0: 11, 1: 14, 2: 15, 3: 16, 4: 18, 5: 20, 6: 22, 7: 23, 8: 24, 9: 26,
+    10: 27, 11: 28, 12: 29, 13: 30, 14: 31, 15: 32, 16: 33, 17: 34,
+}
+
+
+def v_grade_to_normalized_difficulty(v_grade):
+    """Converts a V-scale grade (as used by generate.py's public API) into the
+    normalized difficulty value Setter's `grade` input actually expects."""
+    difficulty = V_GRADE_TO_DIFFICULTY.get(
+        v_grade, V_GRADE_TO_DIFFICULTY[max(V_GRADE_TO_DIFFICULTY)]
+    )
+    return (difficulty - 10) / 21.0
+
 # HOLD TYPE TOKENS
 # 12, green,  start
 # 13, cyan,   handholds
@@ -36,7 +59,9 @@ TYPE_TO_TOKEN = {
 }
 TOKEN_TO_TYPE = {v: k for k, v in TYPE_TO_TOKEN.items()}
 START_HOLD_TYPE = 12
+HAND_HOLD_TYPE = 13
 FINISH_HOLD_TYPE = 14
+FOOT_HOLD_TYPE = 15
 
 # Valid Kilterboard hold-id ranges, as used by drawClimb()'s coordinate mapping.
 # Verified against real usage frequency in the training dataset: bolt-on and
@@ -78,6 +103,62 @@ def hold_id_to_xy(hold_id):
         h = hold_id - 1073
         return 1284 - ((h % 17) * 71 + 75), 1349
     return None
+
+
+# Max pixel distance between two holds for them to count as graph-adjacent (reachable
+# from one another). Same threshold used for the route-coherence check in generate.py;
+# grid spacing is 71-142px between adjacent holds, so this allows ~2 grid units of slack.
+HOLD_ADJACENCY_DISTANCE = 220.0
+
+
+def build_hold_adjacency(max_distance=HOLD_ADJACENCY_DISTANCE):
+    """
+    Maps each valid hold id to the set of other hold ids within max_distance of it.
+    Used by generate.py to softly bias sampling toward holds connected to the route
+    built so far, instead of relying purely on a post-hoc rejection filter.
+    """
+    hold_ids = [
+        hold_id
+        for lo, hi in VALID_HOLD_ID_RANGES
+        for hold_id in range(lo, hi + 1)
+    ]
+    coords = {hid: hold_id_to_xy(hid) for hid in hold_ids}
+    adjacency = {hid: set() for hid in hold_ids}
+    for i, a in enumerate(hold_ids):
+        ax, ay = coords[a]
+        for b in hold_ids[i + 1:]:
+            bx, by = coords[b]
+            if ((ax - bx) ** 2 + (ay - by) ** 2) ** 0.5 <= max_distance:
+                adjacency[a].add(b)
+                adjacency[b].add(a)
+    return adjacency
+
+
+# Normalization divisor for board pixel coordinates (see hold_id_to_xy), keeping the
+# coordinate embedding's input in a similar numeric range to other model inputs.
+BOARD_COORD_NORM = 1450.0
+
+
+def build_coord_table(vocab_size=VOCAB_SIZE):
+    """
+    A (vocab_size, 2) table of normalized (x, y) board coordinates per token id, for
+    Setter's coordinate embedding (see coord_embed in forward()). Special tokens
+    (START/END/PAD) and any token that isn't a valid hold get (0, 0) - a neutral
+    placeholder the model can distinguish from real positions via the token embedding
+    it's added to.
+    """
+    table = torch.zeros(vocab_size, 2)
+    for lo, hi in VALID_HOLD_ID_RANGES:
+        for hold_id in range(lo, hi + 1):
+            xy = hold_id_to_xy(hold_id)
+            if xy is None:
+                continue
+            for type_token in TOKEN_TO_TYPE:
+                token = hold_id * 10 + type_token
+                if token < vocab_size:
+                    table[token, 0] = xy[0] / BOARD_COORD_NORM
+                    table[token, 1] = xy[1] / BOARD_COORD_NORM
+    return table
 
 
 def _migrate_vocab_size(state_dict, vocab_size):
@@ -177,6 +258,14 @@ class Setter(nn.Module):
         self.embedding = nn.Embedding(vocab_size, d_model)
         self.pos_encoding = PositionalEncoding(d_model)
 
+        # Board-position embedding: gives the model an explicit geometric prior (each
+        # hold's real x/y on the board) instead of having to infer board layout purely
+        # from which hold-ids co-occur in training data. Coordinates are a fixed,
+        # non-trainable buffer (see build_coord_table); only the projection into
+        # d_model is learned.
+        self.register_buffer("coord_table", build_coord_table(vocab_size))
+        self.coord_embed = nn.Linear(2, d_model)
+
         # Conditioning: create rich embeddings for grade/angle
         self.condition_embed = nn.Sequential(
             nn.Linear(2, d_model),
@@ -204,6 +293,14 @@ class Setter(nn.Module):
         # token co-occurrence patterns.
         self.length_head = nn.Linear(d_model, 1)
 
+        # Second auxiliary head, same idea: predicts the fraction of a route's holds
+        # that are footholds, from the conditioning vector alone. Without this, nothing
+        # constrains hold-*type* composition - the model could satisfy the length target
+        # with any mix of hand/foot holds, and in practice was generating routes with
+        # far more footholds than handholds (real data: footholds are always outnumbered
+        # by handholds, foot/hand ratio 0.65-0.98 across grades).
+        self.foot_fraction_head = nn.Linear(d_model, 1)
+
         # Initialize weights
         self._init_weights()
 
@@ -211,6 +308,11 @@ class Setter(nn.Module):
         conditions = torch.stack([grade, angle], dim=-1)  # (batch, 2)
         cond = self.condition_embed(conditions)  # (batch, d_model)
         return self.length_head(cond).squeeze(-1)  # (batch,)
+
+    def predict_foot_fraction(self, grade, angle):
+        conditions = torch.stack([grade, angle], dim=-1)  # (batch, 2)
+        cond = self.condition_embed(conditions)  # (batch, d_model)
+        return self.foot_fraction_head(cond).squeeze(-1)  # (batch,)
 
     def _init_weights(self):
         """Initialize weights for better training"""
@@ -256,9 +358,12 @@ class Setter(nn.Module):
         # vector at every position (on top of the cross-attention below) so grade/angle
         # have a direct, persistent influence on each step instead of only being
         # reachable through one cross-attention read against a single memory token.
+        # Also add each token's real board position, so the model has an explicit
+        # geometric prior instead of inferring layout purely from co-occurrence.
         tgt_emb = self.embedding(tgt_ids) * math.sqrt(self.d_model)
         tgt_emb = self.pos_encoding(tgt_emb)
         tgt_emb = tgt_emb + cond_emb
+        tgt_emb = tgt_emb + self.coord_embed(self.coord_table[tgt_ids])
 
         # 4. Create causal mask to prevent attending to future tokens
         tgt_len = tgt_emb.size(1)

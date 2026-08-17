@@ -15,6 +15,7 @@ from setter import (
     PAD_TOKEN_ID,
     TYPE_TO_TOKEN,
     NUM_HOLDS_NORM,
+    is_valid_hold_id,
 )
 
 # Pinned to specific dataset commits so training runs are reproducible even if the
@@ -101,15 +102,26 @@ def parseRow(row, min_truncate=1):
     raw_holds = re.findall(r'p(\d+)r(\d+)', row['text'])
     holds = []
     sequence = [START_TOKEN_ID]
+    foot_count = 0
     for hold_id, hold_type in raw_holds:
         hold_type = int(hold_type)
+        hold_id_int = int(hold_id)
         if hold_type not in TYPE_TO_TOKEN:
             # Unrecognized hold-type role in the raw data; skip rather than crash the
             # whole dataset load on one malformed row.
             continue
-        hold_token = int(hold_id) * 10 + TYPE_TO_TOKEN[hold_type]
+        if not is_valid_hold_id(hold_id_int):
+            # The merged dataset pools routes from multiple board configurations/sizes;
+            # a small fraction (~0.5% of holds) reference hole ids far outside this
+            # board's actual range (up to 4845, vs. our vocabulary's max of 1599) and
+            # would otherwise overflow the embedding table. Skip just the bad hold
+            # rather than dropping the whole route.
+            continue
+        hold_token = hold_id_int * 10 + TYPE_TO_TOKEN[hold_type]
         sequence.append(hold_token)
         holds.append((hold_id, hold_type))
+        if hold_type == 15:  # foot
+            foot_count += 1
     sequence.append(END_TOKEN_ID)
 
     # Optional: Add data augmentation by sometimes truncating the input
@@ -134,6 +146,9 @@ def parseRow(row, min_truncate=1):
         # Full route hold count (independent of the truncation augmentation above),
         # normalized for the auxiliary length-prediction head in training.py.
         'num_holds': torch.tensor(len(holds) / NUM_HOLDS_NORM),
+        # Fraction of the full route's holds that are footholds, for the auxiliary
+        # foot-fraction head in training.py.
+        'foot_fraction': torch.tensor(foot_count / len(holds) if holds else 0.0),
     }
 
 def collate_fn(batch):
@@ -156,6 +171,7 @@ def collate_fn(batch):
         "grade": torch.stack([x["grade"] for x in batch]),
         "angle": torch.stack([x["angle"] for x in batch]),
         "num_holds": torch.stack([x["num_holds"] for x in batch]),
+        "foot_fraction": torch.stack([x["foot_fraction"] for x in batch]),
     }
     return padded_batch
 

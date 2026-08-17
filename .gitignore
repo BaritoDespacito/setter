@@ -29,3 +29,8 @@ kilter_setter_best_resume.pt
 flask_stuff/kilter_setter_latest.pt
 flask_stuff/kilter_setter_latest_resume.pt
 flask_stuff/kilter_setter_best_resume.pt
+
+# Visual eval reports (embedded images, large) are local-only. eval_history.jsonl
+# (the compact per-run metrics log) IS committed - that's the actual improvement
+# tracking over time.
+eval_reports/
