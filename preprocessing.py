@@ -15,7 +15,9 @@ from setter import (
     PAD_TOKEN_ID,
     TYPE_TO_TOKEN,
     NUM_HOLDS_NORM,
+    SPACING_NORM,
     is_valid_hold_id,
+    hold_id_to_xy,
 )
 
 # Pinned to specific dataset commits so training runs are reproducible even if the
@@ -100,9 +102,7 @@ def parseRow(row, min_truncate=1):
     :return: a dict, containing the input sequence of holds, the full sequence labels, angle and grade
     """
     raw_holds = re.findall(r'p(\d+)r(\d+)', row['text'])
-    holds = []
-    sequence = [START_TOKEN_ID]
-    foot_count = 0
+    valid_holds = []  # (hold_id_str, hold_type, hold_id_int, y)
     for hold_id, hold_type in raw_holds:
         hold_type = int(hold_type)
         hold_id_int = int(hold_id)
@@ -117,12 +117,41 @@ def parseRow(row, min_truncate=1):
             # would otherwise overflow the embedding table. Skip just the bad hold
             # rather than dropping the whole route.
             continue
+        _, y = hold_id_to_xy(hold_id_int)
+        valid_holds.append((hold_id, hold_type, hold_id_int, y))
+
+    # Order holds bottom-to-top (descending y - larger y is lower on the wall) as an
+    # approximation of real climbing order, instead of the source data's arbitrary
+    # listing order. This also makes the truncation augmentation below physically
+    # meaningful (predict the rest of the climb from a real partial ascent) rather
+    # than an arbitrary split, and gives the graph-adjacency decoding constraint in
+    # generate.py a training-time sequence order it can actually line up with.
+    valid_holds.sort(key=lambda h: -h[3])
+
+    holds = []
+    sequence = [START_TOKEN_ID]
+    foot_count = 0
+    for hold_id, hold_type, hold_id_int, _ in valid_holds:
         hold_token = hold_id_int * 10 + TYPE_TO_TOKEN[hold_type]
         sequence.append(hold_token)
         holds.append((hold_id, hold_type))
         if hold_type == 15:  # foot
             foot_count += 1
     sequence.append(END_TOKEN_ID)
+
+    # Average distance between consecutive holds in (now climbing-order) sequence -
+    # the real per-move reach - for the auxiliary spacing head in training.py. Real
+    # data: this increases from ~130px at the easiest grades to ~230px at the hardest,
+    # a signal nothing else in the model explicitly captures.
+    if len(valid_holds) >= 2:
+        coords = [hold_id_to_xy(h[2]) for h in valid_holds]
+        dists = [
+            ((coords[i][0] - coords[i + 1][0]) ** 2 + (coords[i][1] - coords[i + 1][1]) ** 2) ** 0.5
+            for i in range(len(coords) - 1)
+        ]
+        avg_spacing = sum(dists) / len(dists)
+    else:
+        avg_spacing = 0.0
 
     # Optional: Add data augmentation by sometimes truncating the input
     # This teaches the model to continue partial routes
@@ -149,6 +178,9 @@ def parseRow(row, min_truncate=1):
         # Fraction of the full route's holds that are footholds, for the auxiliary
         # foot-fraction head in training.py.
         'foot_fraction': torch.tensor(foot_count / len(holds) if holds else 0.0),
+        # Average consecutive-hold distance in the (now climbing-order) sequence,
+        # normalized, for the auxiliary spacing head in training.py.
+        'avg_spacing': torch.tensor(avg_spacing / SPACING_NORM),
     }
 
 def collate_fn(batch):
@@ -172,6 +204,7 @@ def collate_fn(batch):
         "angle": torch.stack([x["angle"] for x in batch]),
         "num_holds": torch.stack([x["num_holds"] for x in batch]),
         "foot_fraction": torch.stack([x["foot_fraction"] for x in batch]),
+        "avg_spacing": torch.stack([x["avg_spacing"] for x in batch]),
     }
     return padded_batch
 

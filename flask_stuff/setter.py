@@ -23,6 +23,12 @@ VOCAB_SIZE = 16020
 # a similar numeric range to the grade/angle inputs.
 NUM_HOLDS_NORM = 20.0
 
+# Normalization constant for the auxiliary spacing-prediction head (see
+# Setter.predict_spacing and training.py). Real average consecutive-hold distance
+# ranges from ~130px (easiest) to ~230px (hardest); dividing by this keeps the target
+# in a similar numeric range to the other auxiliary targets.
+SPACING_NORM = 200.0
+
 # The model is trained on the dataset's raw "difficulty" field (~10-39, e.g. from
 # preprocessing.py's `grade = (difficulty - 10) / 21.0`), NOT on the V-scale number
 # climbers actually think in. generate.py's public API takes a V-grade (0-17+), so it
@@ -250,7 +256,11 @@ class PositionalEncoding(nn.Module):
         return x + self.pe[:, :x.size(1)]
 
 class Setter(nn.Module):
-    def __init__(self, vocab_size, d_model=256, nhead=8, num_layers=6):
+    # d_model=384/num_layers=8 (~31.4M params, up from 14.6M at 256/6) - a deliberate
+    # scale-up now that the dataset has grown to ~256k routes and the model has to
+    # juggle more signals (coordinate embedding, three auxiliary heads, climbing-order
+    # sequences). NOT warm-startable from checkpoints at the old size - shapes differ.
+    def __init__(self, vocab_size, d_model=384, nhead=8, num_layers=8):
         super().__init__()
         self.d_model = d_model
 
@@ -301,6 +311,14 @@ class Setter(nn.Module):
         # by handholds, foot/hand ratio 0.65-0.98 across grades).
         self.foot_fraction_head = nn.Linear(d_model, 1)
 
+        # Third auxiliary head: predicts average consecutive-hold reach distance
+        # (normalized) from the conditioning vector alone. Real data: this nearly
+        # doubles from easiest to hardest grades (~130px to ~230px) - a difficulty
+        # signal distinct from hold count, and one nothing else in the model
+        # explicitly captures. Only meaningful now that preprocessing.py orders
+        # holds by climbing height, so "consecutive" corresponds to a real move.
+        self.spacing_head = nn.Linear(d_model, 1)
+
         # Initialize weights
         self._init_weights()
 
@@ -313,6 +331,11 @@ class Setter(nn.Module):
         conditions = torch.stack([grade, angle], dim=-1)  # (batch, 2)
         cond = self.condition_embed(conditions)  # (batch, d_model)
         return self.foot_fraction_head(cond).squeeze(-1)  # (batch,)
+
+    def predict_spacing(self, grade, angle):
+        conditions = torch.stack([grade, angle], dim=-1)  # (batch, 2)
+        cond = self.condition_embed(conditions)  # (batch, d_model)
+        return self.spacing_head(cond).squeeze(-1)  # (batch,)
 
     def _init_weights(self):
         """Initialize weights for better training"""

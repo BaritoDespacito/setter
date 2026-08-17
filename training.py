@@ -15,6 +15,7 @@ LEARNING_RATE = 1e-4
 GRAD_CLIP_NORM = 1.0
 LENGTH_LOSS_WEIGHT = 0.1  # weight of the auxiliary length-prediction loss vs. the main CE loss
 FOOT_FRACTION_LOSS_WEIGHT = 0.1  # weight of the auxiliary foot-fraction loss vs. the main CE loss
+SPACING_LOSS_WEIGHT = 0.1  # weight of the auxiliary spacing-prediction loss vs. the main CE loss
 WEIGHT_DECAY = 0.01  # AdamW decoupled weight decay, standard-ish default
 LABEL_SMOOTHING = 0.1  # softens the CE target so the model isn't pushed toward total certainty
 SEED = 42
@@ -64,11 +65,18 @@ def train():
 
     if WARM_START_PATH and os.path.exists(WARM_START_PATH):
         state_dict = torch.load(WARM_START_PATH, map_location=DEVICE, weights_only=True)
-        missing, unexpected = model.load_state_dict(state_dict, strict=False)
-        print(f"Warm-started from {WARM_START_PATH}")
-        print(f"  new (randomly-initialized) params: {missing}")
-        if unexpected:
-            print(f"  ignored unexpected checkpoint keys: {unexpected}")
+        try:
+            missing, unexpected = model.load_state_dict(state_dict, strict=False)
+            print(f"Warm-started from {WARM_START_PATH}")
+            print(f"  new (randomly-initialized) params: {missing}")
+            if unexpected:
+                print(f"  ignored unexpected checkpoint keys: {unexpected}")
+        except RuntimeError as e:
+            # strict=False only tolerates missing/extra keys, not shape mismatches -
+            # if the architecture itself changed (e.g. d_model/num_layers), every
+            # tensor shape differs and there's nothing meaningful to transfer.
+            print(f"Could not warm-start from {WARM_START_PATH} (architecture changed): {e}")
+            print("Training this model from scratch instead.")
 
     criterion = nn.CrossEntropyLoss(ignore_index=PAD_TOKEN_ID, label_smoothing=LABEL_SMOOTHING)
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
@@ -89,12 +97,15 @@ def train():
             labels = batch["labels"].to(DEVICE)
             num_holds = batch["num_holds"].to(DEVICE)
             foot_fraction = batch["foot_fraction"].to(DEVICE)
+            avg_spacing = batch["avg_spacing"].to(DEVICE)
 
             logits = model(input_ids, grade, angle, labels=labels)
             ce_loss = criterion(logits.reshape(-1, VOCAB_SIZE), labels.reshape(-1))
             length_loss = nn.functional.mse_loss(model.predict_length(grade, angle), num_holds)
             foot_loss = nn.functional.mse_loss(model.predict_foot_fraction(grade, angle), foot_fraction)
-            loss = ce_loss + LENGTH_LOSS_WEIGHT * length_loss + FOOT_FRACTION_LOSS_WEIGHT * foot_loss
+            spacing_loss = nn.functional.mse_loss(model.predict_spacing(grade, angle), avg_spacing)
+            loss = (ce_loss + LENGTH_LOSS_WEIGHT * length_loss + FOOT_FRACTION_LOSS_WEIGHT * foot_loss
+                    + SPACING_LOSS_WEIGHT * spacing_loss)
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP_NORM)
@@ -112,12 +123,15 @@ def train():
                 labels = batch["labels"].to(DEVICE)
                 num_holds = batch["num_holds"].to(DEVICE)
                 foot_fraction = batch["foot_fraction"].to(DEVICE)
+                avg_spacing = batch["avg_spacing"].to(DEVICE)
 
                 logits = model(input_ids, grade, angle, labels=labels)
                 ce_loss = criterion(logits.reshape(-1, VOCAB_SIZE), labels.reshape(-1))
                 length_loss = nn.functional.mse_loss(model.predict_length(grade, angle), num_holds)
                 foot_loss = nn.functional.mse_loss(model.predict_foot_fraction(grade, angle), foot_fraction)
-                val_loss += (ce_loss + LENGTH_LOSS_WEIGHT * length_loss + FOOT_FRACTION_LOSS_WEIGHT * foot_loss).item()
+                spacing_loss = nn.functional.mse_loss(model.predict_spacing(grade, angle), avg_spacing)
+                val_loss += (ce_loss + LENGTH_LOSS_WEIGHT * length_loss + FOOT_FRACTION_LOSS_WEIGHT * foot_loss
+                             + SPACING_LOSS_WEIGHT * spacing_loss).item()
 
         avg_train_loss = train_loss / len(train_loader)
         avg_val_loss = val_loss / len(test_loader)

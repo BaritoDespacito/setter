@@ -8,7 +8,7 @@ def test_model():
     print("Testing new Setter model architecture...")
 
     # Create model
-    model = Setter(vocab_size=VOCAB_SIZE, d_model=256, nhead=8, num_layers=6)
+    model = Setter(vocab_size=VOCAB_SIZE)  # uses current default architecture
     print(f"✓ Model created successfully")
     print(f"  Total parameters: {sum(p.numel() for p in model.parameters()):,}")
 
