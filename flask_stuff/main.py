@@ -3,6 +3,7 @@ from flask_cors import CORS
 import torch
 from generate import generate_route, decode_holds, drawClimb, MIN_GRADE, MAX_GRADE, MIN_ANGLE, MAX_ANGLE
 from setter import Setter, VOCAB_SIZE, load_checkpoint_state_dict
+from critic import load_critic
 import datetime
 import os
 import logging
@@ -55,6 +56,7 @@ if not resources_available:
 # Load the model once at startup rather than on every request - reloading a ~60MB
 # checkpoint per request is what was making this endpoint trivial to overwhelm.
 model = None
+critic = None
 if resources_available:
     device = "cpu"
     model = Setter(vocab_size=VOCAB_SIZE).to(device)
@@ -62,6 +64,11 @@ if resources_available:
     model.load_state_dict(load_checkpoint_state_dict(model_path, map_location=device))
     model.eval()
     logging.info("Model loaded and ready.")
+
+    critic_path = os.path.join(os.path.dirname(__file__), "critic_best.pt")
+    critic = load_critic(critic_path, device=device)
+    logging.info("Critic loaded, using it to rerank candidates." if critic else
+                 "No critic checkpoint found, falling back to hold-count proxy.")
 
 
 @app.route('/')
@@ -102,7 +109,7 @@ def generate():
         return jsonify({'error': f'angle must be between {MIN_ANGLE} and {MAX_ANGLE}.'}), 400
 
     try:
-        tokens = generate_route(model, grade=grade, angle=angle)
+        tokens = generate_route(model, grade=grade, angle=angle, critic=critic)
         climb = decode_holds(tokens)
 
         img = drawClimb(climb)

@@ -241,18 +241,38 @@ def _route_is_valid(holds):
     return True
 
 
-def generate_route(model, grade, angle, max_length=None, temperature=0.8, device="cpu", max_attempts=8):
+def _critic_grade_distance(critic, tokens, grade, angle, device):
+    """How far off (in normalized difficulty) the critic thinks this route is from
+    the requested grade - lower is a better match."""
+    target_norm = v_grade_to_normalized_difficulty(grade)
+    route_ids = torch.tensor([tokens], device=device)
+    angle_tensor = torch.tensor([angle / 70.0], device=device)
+    with torch.no_grad():
+        predicted_norm = critic(route_ids, angle_tensor).item()
+    return abs(predicted_norm - target_norm)
+
+
+def generate_route(model, grade, angle, max_length=None, temperature=0.8, device="cpu", max_attempts=8, critic=None):
     """
     Generates a token-id route, retrying (with a higher temperature each attempt) up to
-    max_attempts times. Among attempts that pass the validity filter, returns the one
+    max_attempts times.
+
+    Without a critic: among attempts that pass the validity filter, returns the one
     whose hold count is closest to the model's own predict_length target (an early exit
     fires as soon as a valid attempt is within 1 hold of that target, to avoid always
     paying for every attempt); if none pass, returns the closest-to-target attempt
     overall as a best-effort result, rather than just whichever attempt happened last.
 
-    If max_length isn't given, it's derived from the same predict_length target plus
-    slack, instead of a fixed cap - so a V1 and a V10 aren't generated with the same
-    length budget.
+    With a critic (see critic.py): the hold-count proxy is replaced with something more
+    direct - every attempt is generated (no early exit, since the point is comparing
+    candidates), then the critic judges each *finished* route and whichever one it
+    thinks actually looks closest to the requested grade wins. This is a better proxy
+    for "does this route look right" than hold count, since the critic looks at the
+    whole route bidirectionally rather than inferring from a single scalar target.
+
+    If max_length isn't given, it's derived from the predict_length target plus slack,
+    instead of a fixed cap - so a V1 and a V10 aren't generated with the same length
+    budget.
     """
     if not (MIN_GRADE <= grade <= MAX_GRADE):
         raise ValueError(f"grade must be between {MIN_GRADE} and {MAX_GRADE}, got {grade}")
@@ -272,12 +292,16 @@ def generate_route(model, grade, angle, max_length=None, temperature=0.8, device
         valid = _route_is_valid(climb)
         hold_count = len([h for h in climb if h not in ("[START]", "[END]")])
         candidates.append((tokens, valid, hold_count))
-        if valid and abs(hold_count - predicted_holds) <= 1:
+        if critic is None and valid and abs(hold_count - predicted_holds) <= 1:
             return tokens
 
     valid_candidates = [c for c in candidates if c[1]]
     pool = valid_candidates if valid_candidates else candidates
-    best = min(pool, key=lambda c: abs(c[2] - predicted_holds))
+
+    if critic is not None:
+        best = min(pool, key=lambda c: _critic_grade_distance(critic, c[0], grade, angle, device))
+    else:
+        best = min(pool, key=lambda c: abs(c[2] - predicted_holds))
     return best[0]
 
 
@@ -338,7 +362,11 @@ if __name__ == "__main__":
     checkpoint_path = os.path.join(SCRIPT_DIR, "kilter_setter_best.pt")
     model.load_state_dict(load_checkpoint_state_dict(checkpoint_path, map_location=device))
 
-    tokens = generate_route(model, grade=args.grade, angle=args.angle, device=device)
+    from critic import load_critic
+    critic = load_critic(os.path.join(SCRIPT_DIR, "critic_best.pt"), device=device)
+    print("Using critic-based reranking" if critic else "No critic checkpoint found, using hold-count proxy")
+
+    tokens = generate_route(model, grade=args.grade, angle=args.angle, device=device, critic=critic)
     climb = decode_holds(tokens)
 
     print("Generated climb:", " → ".join(climb))

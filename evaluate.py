@@ -25,6 +25,7 @@ import torch
 
 from setter import Setter, VOCAB_SIZE, load_checkpoint_state_dict, hold_id_to_xy
 from generate import generate_route, decode_holds, drawClimb, _route_is_valid
+from critic import load_critic
 
 DEFAULT_GRADES = [1, 4, 7, 10, 13, 16]
 DEFAULT_ANGLES = [0, 10, 20, 30, 40, 50, 60, 70]
@@ -34,7 +35,7 @@ HISTORY_PATH = os.path.join(SCRIPT_DIR, "eval_history.jsonl")
 REPORTS_DIR = os.path.join(SCRIPT_DIR, "eval_reports")
 
 
-def evaluate_checkpoint(model, device="cpu", grades=None, angles=None, seed=123, with_images=False):
+def evaluate_checkpoint(model, device="cpu", grades=None, angles=None, seed=123, with_images=False, critic=None):
     """
     Returns a dict summary: overall + per-grade validity rate, avg holds, avg y-span.
     If with_images, each row also carries a PIL image of the rendered climb.
@@ -47,7 +48,7 @@ def evaluate_checkpoint(model, device="cpu", grades=None, angles=None, seed=123,
     rows = []
     for grade in grades:
         for angle in angles:
-            tokens = generate_route(model, grade=grade, angle=angle, device=device)
+            tokens = generate_route(model, grade=grade, angle=angle, device=device, critic=critic)
             climb = decode_holds(tokens)
             holds = [h for h in climb if h not in ("[START]", "[END]")]
             coords = [hold_id_to_xy(int(h[1:h.index("r")])) for h in holds]
@@ -263,7 +264,7 @@ figcaption {{ padding: 0.45rem 0.55rem 0.6rem; display: flex; flex-direction: co
 
 
 def run_evaluation(model, device="cpu", label=None, checkpoint_path=None, val_loss=None,
-                    grades=None, angles=None, seed=123, save_report=True, save_history=True):
+                    grades=None, angles=None, seed=123, save_report=True, save_history=True, critic=None):
     """
     Full evaluation: generate + score routes, print a summary, optionally save a visual
     HTML report and append to eval_history.jsonl. This is the one function to call
@@ -271,7 +272,7 @@ def run_evaluation(model, device="cpu", label=None, checkpoint_path=None, val_lo
     """
     label = label or datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     summary = evaluate_checkpoint(model, device=device, grades=grades, angles=angles,
-                                   seed=seed, with_images=save_report)
+                                   seed=seed, with_images=save_report, critic=critic)
     print_summary(summary)
 
     if save_history:
@@ -298,6 +299,7 @@ if __name__ == "__main__":
     parser.add_argument("--label", default=None, help="Short description of what changed since the last eval")
     parser.add_argument("--history", action="store_true", help="Print recent evaluation history and exit")
     parser.add_argument("--no-report", action="store_true", help="Skip the visual HTML report")
+    parser.add_argument("--no-critic", action="store_true", help="Ignore critic_best.pt even if present")
     args = parser.parse_args()
 
     if args.history:
@@ -312,5 +314,8 @@ if __name__ == "__main__":
         print(f"Checkpoint not found: {args.checkpoint}")
         sys.exit(1)
 
+    critic = None if args.no_critic else load_critic(os.path.join(SCRIPT_DIR, "critic_best.pt"), device=device)
+    print("Using critic-based reranking" if critic else "No critic checkpoint found, using hold-count proxy")
+
     run_evaluation(model, device=device, label=args.label, checkpoint_path=args.checkpoint,
-                    save_report=not args.no_report)
+                    save_report=not args.no_report, critic=critic)
