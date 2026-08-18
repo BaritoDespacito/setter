@@ -5,8 +5,11 @@ from generate import generate_route, decode_holds, drawClimb, MIN_GRADE, MAX_GRA
 from setter import Setter, VOCAB_SIZE, load_checkpoint_state_dict
 from critic import load_critic
 import datetime
+import json
 import os
 import logging
+
+CHANGELOG_PATH = os.path.join(os.path.dirname(__file__), "eval_history.jsonl")
 
 app = Flask(__name__)
 CORS(app)
@@ -123,6 +126,26 @@ def generate():
         # Log the real error server-side, but don't leak internals to the client.
         logging.error(f"Error generating climb: {str(e)}", exc_info=True)
         return jsonify({'error': 'Failed to generate climb.'}), 500
+
+@app.route('/changelog')
+def changelog():
+    """Serves eval_history.jsonl (model quality over time) as JSON for the frontend."""
+    if not os.path.exists(CHANGELOG_PATH):
+        return jsonify({'entries': []})
+
+    entries = []
+    with open(CHANGELOG_PATH) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                logging.warning("Skipping malformed line in eval_history.jsonl")
+
+    entries.sort(key=lambda r: r.get("timestamp", ""), reverse=True)
+    return jsonify({'entries': entries})
 
 @app.route('/status')
 def status():
