@@ -34,3 +34,6 @@ flask_stuff/kilter_setter_best_resume.pt
 # (the compact per-run metrics log) IS committed - that's the actual improvement
 # tracking over time.
 eval_reports/
+
+# Raw stdout/tqdm dump from training.py runs - local debug output only.
+train_log.txt
