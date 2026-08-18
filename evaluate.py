@@ -23,7 +23,14 @@ import sys
 
 import torch
 
-from setter import Setter, VOCAB_SIZE, load_checkpoint_state_dict, hold_id_to_xy
+from setter import (
+    Setter,
+    VOCAB_SIZE,
+    load_checkpoint_state_dict,
+    hold_id_to_xy,
+    v_grade_to_normalized_difficulty,
+    normalized_difficulty_to_v_grade,
+)
 from generate import generate_route, decode_holds, drawClimb, _route_is_valid
 from critic import load_critic
 
@@ -59,6 +66,15 @@ def evaluate_checkpoint(model, device="cpu", grades=None, angles=None, seed=123,
                 "valid": _route_is_valid(climb),
                 "n_holds": len(holds), "y_span": y_span,
             }
+            if critic is not None:
+                route_ids = torch.tensor([tokens], device=device)
+                angle_tensor = torch.tensor([angle / 70.0], device=device)
+                with torch.no_grad():
+                    predicted_norm = critic(route_ids, angle_tensor).item()
+                row["critic_v_grade"] = normalized_difficulty_to_v_grade(predicted_norm)
+                row["critic_diff_units"] = abs(
+                    predicted_norm - v_grade_to_normalized_difficulty(grade)
+                ) * 21.0  # back to raw difficulty units, for a finer-grained average than V-grade rounding
             if with_images:
                 row["image"] = drawClimb(climb, save=False)
             rows.append(row)
@@ -73,13 +89,16 @@ def evaluate_checkpoint(model, device="cpu", grades=None, angles=None, seed=123,
     for grade, grade_rows in by_grade.items():
         n = len(grade_rows)
         v = sum(1 for r in grade_rows if r["valid"])
-        per_grade[grade] = {
+        stats = {
             "valid_rate": v / n,
             "avg_holds": statistics.mean(r["n_holds"] for r in grade_rows),
             "avg_y_span": statistics.mean(r["y_span"] for r in grade_rows),
         }
+        if critic is not None:
+            stats["avg_critic_diff"] = statistics.mean(r["critic_diff_units"] for r in grade_rows)
+        per_grade[grade] = stats
 
-    return {
+    summary = {
         "total": total,
         "valid_rate": valid / total,
         "avg_holds": statistics.mean(r["n_holds"] for r in rows),
@@ -87,17 +106,23 @@ def evaluate_checkpoint(model, device="cpu", grades=None, angles=None, seed=123,
         "per_grade": per_grade,
         "rows": rows,
     }
+    if critic is not None:
+        summary["avg_critic_diff"] = statistics.mean(r["critic_diff_units"] for r in rows)
+    return summary
 
 
 def print_summary(summary):
+    has_critic = "avg_critic_diff" in summary
     print(f"Evaluated {summary['total']} routes "
           f"({len(summary['per_grade'])} grades x {summary['total'] // len(summary['per_grade'])} angles)")
+    critic_bit = f"  critic grade-match error: {summary['avg_critic_diff']:.2f} difficulty units" if has_critic else ""
     print(f"  Overall valid rate: {summary['valid_rate']*100:.0f}%  "
-          f"avg holds: {summary['avg_holds']:.1f}  avg y-span: {summary['avg_y_span']:.0f}px")
+          f"avg holds: {summary['avg_holds']:.1f}  avg y-span: {summary['avg_y_span']:.0f}px{critic_bit}")
     for grade in sorted(summary["per_grade"]):
         s = summary["per_grade"][grade]
+        critic_bit = f"  critic_err={s['avg_critic_diff']:.2f}" if has_critic else ""
         print(f"    V{grade}: valid={s['valid_rate']*100:.0f}%  "
-              f"avg_holds={s['avg_holds']:.1f}  avg_y_span={s['avg_y_span']:.0f}px")
+              f"avg_holds={s['avg_holds']:.1f}  avg_y_span={s['avg_y_span']:.0f}px{critic_bit}")
 
 
 def append_history(summary, label, checkpoint_path=None, val_loss=None):
@@ -163,6 +188,11 @@ def build_report_html(summary, label, checkpoint_path=None, val_loss=None):
         pill = "pill-good" if r["valid"] else "pill-bad"
         text = "VALID" if r["valid"] else "REJECTED"
         img_b64 = _image_to_b64_jpeg(r["image"])
+        critic_html = ""
+        if "critic_v_grade" in r:
+            diff = abs(r["critic_v_grade"] - r["grade"])
+            critic_class = "critic-good" if diff == 0 else ("critic-ok" if diff <= 1 else "critic-bad")
+            critic_html = f'<span class="critic-tag {critic_class}">critic thinks V{r["critic_v_grade"]}</span>'
         return f'''
       <figure class="card">
         <div class="thumb-wrap">
@@ -171,6 +201,7 @@ def build_report_html(summary, label, checkpoint_path=None, val_loss=None):
         </div>
         <figcaption>
           <span class="pill {pill}">{text}</span>
+          {critic_html}
           <span class="stat-line">{r['n_holds']} holds &middot; span {r['y_span']}px</span>
         </figcaption>
       </figure>'''
@@ -180,11 +211,12 @@ def build_report_html(summary, label, checkpoint_path=None, val_loss=None):
         grade_rows = sorted(by_grade[grade], key=lambda r: r["angle"])
         s = summary["per_grade"][grade]
         cards = "".join(card(r) for r in grade_rows)
+        critic_meta = f" &middot; critic err {s['avg_critic_diff']:.2f}" if "avg_critic_diff" in s else ""
         rows_html.append(f'''
     <section class="grade-row">
       <div class="grade-label">
         <span class="grade-num">V{grade}</span>
-        <span class="grade-meta">{s['valid_rate']*100:.0f}% valid &middot; avg {s['avg_holds']:.1f} holds</span>
+        <span class="grade-meta">{s['valid_rate']*100:.0f}% valid &middot; avg {s['avg_holds']:.1f} holds{critic_meta}</span>
       </div>
       <div class="card-strip">{cards}</div>
     </section>''')
@@ -196,6 +228,11 @@ def build_report_html(summary, label, checkpoint_path=None, val_loss=None):
         meta_bits.append(f"val loss: <span class=\"mono\">{val_loss:.4f}</span>")
     meta_line = " &middot; ".join(meta_bits)
 
+    critic_stat_html = ""
+    if "avg_critic_diff" in summary:
+        critic_stat_html = f'''
+    <div class="stat"><span class="num mono">{summary['avg_critic_diff']:.2f}</span><span class="label">Critic grade error</span></div>'''
+
     return f'''<!doctype html>
 <title>Route Quality Eval</title>
 <style>
@@ -206,6 +243,7 @@ def build_report_html(summary, label, checkpoint_path=None, val_loss=None):
   --accent: #2F9E96; --accent-strong: #1F7A73;
   --good: #4F9D5C; --good-bg: rgba(79,157,92,0.14);
   --bad: #C25B3F; --bad-bg: rgba(194,91,63,0.14);
+  --warn: #C99A3A;
   --bg: var(--chalk); --surface: var(--chalk-raised); --border: var(--chalk-border);
   --text: #211F1A; --text-muted: #6B6558; --text-faint: #8C8676;
 }}
@@ -245,6 +283,10 @@ figcaption {{ padding: 0.45rem 0.55rem 0.6rem; display: flex; flex-direction: co
 .pill {{ align-self: flex-start; font-size: 0.6rem; font-weight: 700; letter-spacing: 0.06em; padding: 0.12rem 0.4rem; border-radius: 999px; }}
 .pill-good {{ background: var(--good-bg); color: var(--good); }}
 .pill-bad {{ background: var(--bad-bg); color: var(--bad); }}
+.critic-tag {{ align-self: flex-start; font-size: 0.62rem; font-weight: 600; }}
+.critic-good {{ color: var(--good); }}
+.critic-ok {{ color: var(--warn); }}
+.critic-bad {{ color: var(--bad); }}
 .stat-line {{ font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.62rem; color: var(--text-faint); }}
 </style>
 <header class="masthead">
@@ -254,7 +296,7 @@ figcaption {{ padding: 0.45rem 0.55rem 0.6rem; display: flex; flex-direction: co
     <div class="stat"><span class="num mono">{summary['total']}</span><span class="label">Routes</span></div>
     <div class="stat"><span class="num mono">{summary['valid_rate']*100:.0f}%</span><span class="label">Valid</span></div>
     <div class="stat"><span class="num mono">{summary['avg_holds']:.1f}</span><span class="label">Avg holds</span></div>
-    <div class="stat"><span class="num mono">{summary['avg_y_span']:.0f}px</span><span class="label">Avg y-span</span></div>
+    <div class="stat"><span class="num mono">{summary['avg_y_span']:.0f}px</span><span class="label">Avg y-span</span></div>{critic_stat_html}
   </div>
 </header>
 <main>

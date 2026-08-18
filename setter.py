@@ -52,6 +52,13 @@ def v_grade_to_normalized_difficulty(v_grade):
     )
     return (difficulty - 10) / 21.0
 
+
+def normalized_difficulty_to_v_grade(normalized):
+    """Inverts v_grade_to_normalized_difficulty: finds the nearest V-grade for a
+    predicted normalized difficulty (e.g. the critic's output)."""
+    difficulty = normalized * 21.0 + 10.0
+    return min(V_GRADE_TO_DIFFICULTY, key=lambda v: abs(V_GRADE_TO_DIFFICULTY[v] - difficulty))
+
 # HOLD TYPE TOKENS
 # 12, green,  start
 # 13, cyan,   handholds

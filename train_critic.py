@@ -12,7 +12,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 
 from preprocessing import train_dataset, test_dataset
-from setter import PAD_TOKEN_ID, V_GRADE_TO_DIFFICULTY
+from setter import PAD_TOKEN_ID, normalized_difficulty_to_v_grade
 from critic import RouteCritic
 from tqdm import tqdm
 
@@ -59,12 +59,6 @@ def collate_fn(batch):
         "angle": torch.stack([x["angle"] for x in batch]),
         "grade": torch.stack([x["grade"] for x in batch]),
     }
-
-
-def normalized_diff_to_v_grade(normalized):
-    """Inverts v_grade_to_normalized_difficulty, for interpretable error reporting."""
-    difficulty = normalized * 21.0 + 10.0
-    return min(V_GRADE_TO_DIFFICULTY, key=lambda v: abs(V_GRADE_TO_DIFFICULTY[v] - difficulty))
 
 
 def train():
@@ -115,8 +109,8 @@ def train():
                 val_loss += nn.functional.mse_loss(pred, grade).item()
 
                 for p, g in zip(pred.tolist(), grade.tolist()):
-                    pred_v = normalized_diff_to_v_grade(p)
-                    true_v = normalized_diff_to_v_grade(g)
+                    pred_v = normalized_difficulty_to_v_grade(p)
+                    true_v = normalized_difficulty_to_v_grade(g)
                     abs_diff_sum += abs(pred_v - true_v)
                     v_grade_correct += pred_v == true_v
                     v_grade_within_1 += abs(pred_v - true_v) <= 1
