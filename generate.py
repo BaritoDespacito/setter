@@ -169,13 +169,19 @@ def _predict_target_length(model, grade, angle, device):
 
 # Max pixel distance from a hold to its nearest neighbor in the route before it's
 # treated as a "floating"/unreachable hold rather than part of a coherent line
-# (grid spacing is 71-142px between adjacent holds; ~2 grid units of slack).
-MAX_NEIGHBOR_DISTANCE = 220.0
+# (grid spacing is 71-142px between adjacent holds). Loosened from 220 to 260 after
+# checking real generated routes against this threshold: several routes were being
+# marked invalid over isolated-hold distances of 224-267px, imperceptible outliers
+# a few pixels past the old cutoff, while genuinely disconnected holds (500px+) still
+# correctly fail at the new threshold too.
+MAX_NEIGHBOR_DISTANCE = 260.0
 
 # A route can legitimately have two start holds (one per hand) or two finish holds
 # (matching to finish), but only if the pair sits close enough together to plausibly
-# be reached by two hands at once - not scattered across the board.
-TWO_HAND_MAX_SPAN = 200.0
+# be reached by two hands at once - not scattered across the board. Loosened from 200
+# to 280 for the same reason as MAX_NEIGHBOR_DISTANCE above: real two-hand starts were
+# routinely landing at 225-293px and getting rejected despite looking fine.
+TWO_HAND_MAX_SPAN = 280.0
 
 
 def _distance(a, b):
