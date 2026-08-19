@@ -1,5 +1,5 @@
 import { useMemo, useRef } from "react";
-import { LayoutChangeEvent, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { LayoutChangeEvent, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import Animated, { useAnimatedStyle, useSharedValue, withSpring } from "react-native-reanimated";
 import { fonts, spacing, type ThemeColors } from "../lib/theme";
 import { useTheme } from "../lib/theme-context";
@@ -15,6 +15,25 @@ interface OptionRowProps {
 export function OptionRow({ label, options, value, onChange, formatOption }: OptionRowProps) {
   const { colors } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
+  const scrollRef = useRef<ScrollView>(null);
+
+  // On web, a horizontal ScrollView only responds to a trackpad's horizontal swipe or
+  // shift+wheel by default - a plain vertical mouse-wheel scroll (the most common
+  // input) does nothing, making the row look unscrollable. Redirect vertical wheel
+  // delta into horizontal scroll so it behaves like any other horizontal carousel.
+  const handleWheel =
+    Platform.OS === "web"
+      ? (e: { deltaX: number; deltaY: number; preventDefault: () => void }) => {
+          if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+          // react-native-web-specific escape hatch to the underlying scrollable DOM
+          // node - not part of ScrollView's cross-platform ref type.
+          const node = (scrollRef.current as unknown as { getScrollableNode?: () => HTMLElement })
+            ?.getScrollableNode?.();
+          if (!node) return;
+          e.preventDefault();
+          node.scrollLeft += e.deltaY;
+        }
+      : undefined;
 
   const underlineX = useSharedValue(0);
   const underlineWidth = useSharedValue(0);
@@ -47,7 +66,13 @@ export function OptionRow({ label, options, value, onChange, formatOption }: Opt
   return (
     <View style={styles.container}>
       <Text style={styles.label}>{label}</Text>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+      <ScrollView
+        ref={scrollRef}
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        // @ts-expect-error - web-only DOM event, not part of ScrollViewProps' RN types
+        onWheel={handleWheel}
+      >
         <View>
           <View style={styles.optionsRow}>
             {options.map((option) => {
