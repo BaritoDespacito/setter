@@ -1,18 +1,41 @@
-export const colors = {
-  bg: "#0B1110",
-  surface: "#141D1C",
-  surfaceAlt: "#1D2C29",
-  border: "#2E3D3A",
-  text: "#F5F7F6",
-  textMuted: "#A3B6B2",
-  accent: "#35B0A6",
-  accentText: "#03130F",
-  accent2: "#FF8A4C",
-  accent2Text: "#1C0900",
+export const lightColors = {
+  bg: "#F7F3EC",
+  surface: "#FFFFFF",
+  surfaceAlt: "#EFE9DE",
+  border: "#DEDACE",
+  text: "#1A1A17",
+  textMuted: "#6B675E",
+  accent: "#1F7A70",
+  accentText: "#F7F3EC",
+  good: "#2F7A55",
+  warn: "#9C6B18",
+  bad: "#B23B2E",
+};
+
+export const darkColors = {
+  bg: "#0E0E0C",
+  surface: "#18170F",
+  surfaceAlt: "#211F17",
+  border: "#332F24",
+  text: "#F2EEE3",
+  textMuted: "#8F8A7C",
+  accent: "#3FBBAE",
+  accentText: "#0A1211",
   good: "#4CC38A",
   warn: "#E5B94E",
   bad: "#E0685C",
-  accentGradient: ["#35B0A6", "#1E7A72"] as const,
+};
+
+export type ThemeColors = typeof lightColors;
+
+export const fonts = {
+  display: "Fraunces_600SemiBold",
+  displayMedium: "Fraunces_500Medium",
+  displayItalic: "Fraunces_500Medium_Italic",
+  body: "Inter_400Regular",
+  bodyMedium: "Inter_500Medium",
+  bodySemiBold: "Inter_600SemiBold",
+  bodyBold: "Inter_700Bold",
 };
 
 export const spacing = (n: number) => n * 8;

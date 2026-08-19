@@ -1,10 +1,13 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { router } from "expo-router";
 import { useAuth } from "../src/lib/auth";
-import { colors, spacing } from "../src/lib/theme";
+import { fonts, spacing, type ThemeColors } from "../src/lib/theme";
+import { useTheme } from "../src/lib/theme-context";
 
 export default function LoginScreen() {
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const { signInWithPassword, signUpWithPassword } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -64,19 +67,21 @@ export default function LoginScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.bg, padding: spacing(3), gap: spacing(2), justifyContent: "center" },
-  title: { color: colors.text, fontSize: 24, fontWeight: "800", marginBottom: spacing(1) },
-  input: {
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 10,
-    padding: spacing(1.5),
-    color: colors.text,
-  },
-  error: { color: colors.bad },
-  submit: { backgroundColor: colors.accent, borderRadius: 10, padding: spacing(1.75), alignItems: "center", marginTop: spacing(1) },
-  submitText: { color: colors.accentText, fontWeight: "700", fontSize: 16 },
-  switchText: { color: colors.accent, textAlign: "center", marginTop: spacing(1) },
-});
+function makeStyles(colors: ThemeColors) {
+  return StyleSheet.create({
+    container: { flex: 1, backgroundColor: colors.bg, padding: spacing(3), gap: spacing(2), justifyContent: "center" },
+    title: { color: colors.text, fontFamily: fonts.display, fontSize: 24, marginBottom: spacing(1) },
+    input: {
+      backgroundColor: "transparent",
+      borderBottomWidth: 1,
+      borderBottomColor: colors.border,
+      paddingVertical: spacing(1.25),
+      fontFamily: fonts.body,
+      color: colors.text,
+    },
+    error: { color: colors.bad, fontFamily: fonts.body },
+    submit: { backgroundColor: colors.text, borderRadius: 4, padding: spacing(1.75), alignItems: "center", marginTop: spacing(1) },
+    submitText: { color: colors.accentText, fontFamily: fonts.bodySemiBold, fontSize: 16 },
+    switchText: { color: colors.accent, fontFamily: fonts.body, textAlign: "center", marginTop: spacing(1) },
+  });
+}

@@ -1,10 +1,8 @@
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
-import Animated, {
-  useAnimatedStyle,
-  withSpring,
-  withTiming,
-} from "react-native-reanimated";
-import { colors, spacing } from "../lib/theme";
+import { useMemo, useRef } from "react";
+import { LayoutChangeEvent, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import Animated, { useAnimatedStyle, useSharedValue, withSpring } from "react-native-reanimated";
+import { fonts, spacing, type ThemeColors } from "../lib/theme";
+import { useTheme } from "../lib/theme-context";
 
 interface OptionRowProps {
   label: string;
@@ -15,57 +13,98 @@ interface OptionRowProps {
 }
 
 export function OptionRow({ label, options, value, onChange, formatOption }: OptionRowProps) {
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
+
+  const underlineX = useSharedValue(0);
+  const underlineWidth = useSharedValue(0);
+  const layouts = useRef<Record<number, { x: number; width: number }>>({});
+
+  const applyUnderline = (animate: boolean) => {
+    const layout = layouts.current[value];
+    if (!layout) return;
+    if (animate) {
+      underlineX.value = withSpring(layout.x, { damping: 18, stiffness: 260 });
+      underlineWidth.value = withSpring(layout.width, { damping: 18, stiffness: 260 });
+    } else {
+      underlineX.value = layout.x;
+      underlineWidth.value = layout.width;
+    }
+  };
+
+  const handleLayout = (option: number) => (e: LayoutChangeEvent) => {
+    const { x, width } = e.nativeEvent.layout;
+    const isFirstMeasurement = !layouts.current[option];
+    layouts.current[option] = { x, width };
+    if (option === value) applyUnderline(!isFirstMeasurement);
+  };
+
+  const underlineStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: underlineX.value }],
+    width: underlineWidth.value,
+  }));
+
   return (
     <View style={styles.container}>
       <Text style={styles.label}>{label}</Text>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips}>
-        {options.map((option) => (
-          <Chip
-            key={option}
-            selected={option === value}
-            label={formatOption ? formatOption(option) : String(option)}
-            onPress={() => onChange(option)}
-          />
-        ))}
+      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+        <View>
+          <View style={styles.optionsRow}>
+            {options.map((option) => {
+              const selected = option === value;
+              return (
+                <Pressable
+                  key={option}
+                  onPress={() => {
+                    onChange(option);
+                    applyUnderline(true);
+                  }}
+                  onLayout={handleLayout(option)}
+                  style={styles.option}
+                >
+                  <Text style={[styles.optionText, selected && styles.optionTextSelected]}>
+                    {formatOption ? formatOption(option) : option}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          <Animated.View style={[styles.underline, underlineStyle]} />
+        </View>
       </ScrollView>
     </View>
   );
 }
 
-function Chip({ selected, label, onPress }: { selected: boolean; label: string; onPress: () => void }) {
-  const animatedStyle = useAnimatedStyle(() => ({
-    backgroundColor: withTiming(selected ? colors.accent : colors.surfaceAlt, { duration: 180 }),
-    borderColor: withTiming(selected ? colors.accent : colors.border, { duration: 180 }),
-    transform: [{ scale: withSpring(selected ? 1.06 : 1, { damping: 12, stiffness: 220 }) }],
-  }));
-
-  return (
-    <Pressable onPress={onPress}>
-      <Animated.View style={[styles.chip, animatedStyle]}>
-        <Text style={[styles.chipText, selected && styles.chipTextSelected]}>{label}</Text>
-      </Animated.View>
-    </Pressable>
-  );
+function makeStyles(colors: ThemeColors) {
+  return StyleSheet.create({
+    container: { gap: spacing(1) },
+    label: {
+      color: colors.textMuted,
+      fontFamily: fonts.bodySemiBold,
+      fontSize: 12,
+      textTransform: "uppercase",
+      letterSpacing: 1,
+    },
+    optionsRow: { flexDirection: "row" },
+    option: {
+      paddingHorizontal: spacing(1.5),
+      paddingVertical: spacing(1),
+    },
+    optionText: {
+      fontFamily: fonts.body,
+      fontSize: 16,
+      color: colors.textMuted,
+    },
+    optionTextSelected: {
+      fontFamily: fonts.bodySemiBold,
+      color: colors.text,
+    },
+    underline: {
+      position: "absolute",
+      bottom: 0,
+      height: 2,
+      backgroundColor: colors.accent,
+    },
+  });
 }
-
-const styles = StyleSheet.create({
-  container: { gap: spacing(1) },
-  label: {
-    color: colors.textMuted,
-    fontSize: 13,
-    fontWeight: "600",
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-  chips: { gap: spacing(1), paddingVertical: spacing(0.5) },
-  chip: {
-    paddingHorizontal: spacing(2),
-    paddingVertical: spacing(1),
-    borderRadius: 999,
-    backgroundColor: colors.surfaceAlt,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  chipText: { color: colors.text, fontWeight: "600" },
-  chipTextSelected: { color: colors.accentText },
-});

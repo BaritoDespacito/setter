@@ -1,6 +1,6 @@
 import Animated, { FadeIn } from "react-native-reanimated";
 import Svg, { Circle, Line } from "react-native-svg";
-import { colors } from "../lib/theme";
+import { useTheme } from "../lib/theme-context";
 
 const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 
@@ -21,6 +21,8 @@ interface LogoProps {
 }
 
 export function Logo({ size = 40, animated = true }: LogoProps) {
+  const { colors } = useTheme();
+
   return (
     <Svg width={size} height={size} viewBox="0 0 100 100">
       {POINTS.slice(1).map((point, i) => {
@@ -47,7 +49,7 @@ export function Logo({ size = 40, animated = true }: LogoProps) {
       {POINTS.map(([x, y, r], i) => {
         const isLast = i === POINTS.length - 1;
         const circleProps = isLast
-          ? { fill: colors.accent2 }
+          ? { fill: colors.accent }
           : { fill: "transparent", stroke: colors.accent, strokeWidth: 3.5 };
         if (!animated) {
           return <Circle key={i} cx={x} cy={y} r={r} {...circleProps} />;

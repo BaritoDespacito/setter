@@ -1,12 +1,5 @@
-import { useEffect, useState } from "react";
-import {
-  Image,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import { useEffect, useMemo, useState } from "react";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import Animated, {
   Easing,
   FadeIn,
@@ -17,16 +10,21 @@ import Animated, {
   withSpring,
   withTiming,
 } from "react-native-reanimated";
-import { LinearGradient } from "expo-linear-gradient";
+import { Masthead } from "../../src/components/Masthead";
+import { NavDrawer } from "../../src/components/NavDrawer";
 import { OptionRow } from "../../src/components/OptionRow";
-import { Logo } from "../../src/components/Logo";
 import { ApiError, generateRoute } from "../../src/lib/api";
 import { GRADE_OPTIONS, ANGLE_OPTIONS } from "../../src/lib/config";
-import { colors, spacing } from "../../src/lib/theme";
+import { fonts, spacing, type ThemeColors } from "../../src/lib/theme";
+import { useTheme } from "../../src/lib/theme-context";
 import { useAuth } from "../../src/lib/auth";
 import { saveRoute } from "../../src/lib/routes";
 
 export default function GenerateScreen() {
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+
   const [grade, setGrade] = useState(7);
   const [angle, setAngle] = useState(40);
   const [image, setImage] = useState<string | null>(null);
@@ -35,7 +33,7 @@ export default function GenerateScreen() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { user, configured } = useAuth();
+  const { user } = useAuth();
 
   const handleGenerate = async () => {
     setLoading(true);
@@ -67,51 +65,53 @@ export default function GenerateScreen() {
   };
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-      <View style={styles.header}>
-        <Logo size={36} />
-        <Text style={styles.title}>setter</Text>
-      </View>
-      <Text style={styles.subtitle}>Generate a Kilterboard route</Text>
+    <View style={styles.root}>
+      <Masthead onMenuPress={() => setDrawerOpen(true)} />
+      <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+        <Text style={styles.subtitle}>Generate a Kilterboard route</Text>
 
-      <View style={styles.controls}>
-        <OptionRow label="Grade" options={GRADE_OPTIONS} value={grade} onChange={setGrade} formatOption={(v) => `V${v}`} />
-        <OptionRow label="Angle" options={ANGLE_OPTIONS} value={angle} onChange={setAngle} formatOption={(v) => `${v}°`} />
-      </View>
+        <View style={styles.controls}>
+          <OptionRow label="Grade" options={GRADE_OPTIONS} value={grade} onChange={setGrade} formatOption={(v) => `V${v}`} />
+          <OptionRow label="Angle" options={ANGLE_OPTIONS} value={angle} onChange={setAngle} formatOption={(v) => `${v}°`} />
+        </View>
 
-      <GenerateButton onPress={handleGenerate} loading={loading} />
+        <GenerateButton onPress={handleGenerate} loading={loading} colors={colors} />
 
-      <View style={styles.imageArea}>
-        {loading ? (
-          <ShimmerPlaceholder />
-        ) : image ? (
-          <>
-            <Animated.Image
-              key={image}
-              entering={FadeIn.duration(350)}
-              source={{ uri: image }}
-              style={styles.image}
-              resizeMode="contain"
-            />
-            {configured && user ? (
-              <Pressable style={styles.saveButton} onPress={handleSave} disabled={saving || saved}>
-                <Text style={styles.saveButtonText}>
-                  {saved ? "Saved" : saving ? "Saving…" : "Save route"}
-                </Text>
-              </Pressable>
-            ) : null}
-          </>
-        ) : error ? (
-          <Text style={styles.errorText}>{error}</Text>
-        ) : (
-          <Text style={styles.placeholderText}>Pick a grade and angle, then generate a climb.</Text>
-        )}
-      </View>
-    </ScrollView>
+        <View style={styles.imageArea}>
+          {loading ? (
+            <ShimmerPlaceholder colors={colors} />
+          ) : image ? (
+            <>
+              <Animated.Image
+                key={image}
+                entering={FadeIn.duration(350)}
+                source={{ uri: image }}
+                style={styles.image}
+                resizeMode="contain"
+              />
+              <View style={styles.captionRow}>
+                <Text style={styles.caption}>V{grade} · {angle}°</Text>
+                {user ? (
+                  <Pressable onPress={handleSave} disabled={saving || saved}>
+                    <Text style={styles.saveLink}>{saved ? "Saved" : saving ? "Saving…" : "Save route"}</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            </>
+          ) : error ? (
+            <Text style={styles.errorText}>{error}</Text>
+          ) : (
+            <Text style={styles.placeholderText}>Pick a grade and angle, then generate a climb.</Text>
+          )}
+        </View>
+      </ScrollView>
+      <NavDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />
+    </View>
   );
 }
 
-function GenerateButton({ onPress, loading }: { onPress: () => void; loading: boolean }) {
+function GenerateButton({ onPress, loading, colors }: { onPress: () => void; loading: boolean; colors: ThemeColors }) {
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const scale = useSharedValue(1);
   const animatedStyle = useAnimatedStyle(() => ({
     transform: [{ scale: scale.value }],
@@ -122,27 +122,21 @@ function GenerateButton({ onPress, loading }: { onPress: () => void; loading: bo
       onPress={onPress}
       disabled={loading}
       onPressIn={() => {
-        scale.value = withSpring(0.96, { damping: 14, stiffness: 300 });
+        scale.value = withSpring(0.97, { damping: 14, stiffness: 300 });
       }}
       onPressOut={() => {
         scale.value = withSpring(1, { damping: 14, stiffness: 300 });
       }}
     >
-      <Animated.View style={animatedStyle}>
-        <LinearGradient
-          colors={colors.accentGradient}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={styles.generateButton}
-        >
-          <Text style={styles.generateButtonText}>{loading ? "Generating…" : "Generate"}</Text>
-        </LinearGradient>
+      <Animated.View style={[styles.generateButton, animatedStyle]}>
+        <Text style={styles.generateButtonText}>{loading ? "Generating…" : "Generate"}</Text>
       </Animated.View>
     </Pressable>
   );
 }
 
-function ShimmerPlaceholder() {
+function ShimmerPlaceholder({ colors }: { colors: ThemeColors }) {
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const opacity = useSharedValue(0.4);
 
   useEffect(() => {
@@ -161,47 +155,44 @@ function ShimmerPlaceholder() {
   return <Animated.View style={[styles.shimmer, animatedStyle]} />;
 }
 
-const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.bg },
-  content: { padding: spacing(3), alignItems: "stretch", gap: spacing(3), maxWidth: 560, width: "100%", alignSelf: "center" },
-  header: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing(1.25) },
-  title: { color: colors.text, fontSize: 40, fontWeight: "800", textAlign: "center" },
-  subtitle: { color: colors.textMuted, fontSize: 15, textAlign: "center", marginTop: -spacing(2) },
-  controls: { gap: spacing(2.5) },
-  generateButton: {
-    borderRadius: 12,
-    paddingVertical: spacing(1.75),
-    alignItems: "center",
-  },
-  generateButtonText: { color: colors.accentText, fontSize: 17, fontWeight: "700" },
-  imageArea: {
-    minHeight: 380,
-    borderRadius: 16,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-    alignItems: "center",
-    justifyContent: "center",
-    padding: spacing(2),
-    gap: spacing(2),
-    overflow: "hidden",
-  },
-  shimmer: {
-    width: "100%",
-    height: "100%",
-    minHeight: 340,
-    borderRadius: 12,
-    backgroundColor: colors.surfaceAlt,
-  },
-  image: { width: "100%", aspectRatio: 1 },
-  placeholderText: { color: colors.textMuted, textAlign: "center" },
-  errorText: { color: colors.bad, textAlign: "center" },
-  saveButton: {
-    borderWidth: 1,
-    borderColor: colors.accent,
-    borderRadius: 10,
-    paddingVertical: spacing(1),
-    paddingHorizontal: spacing(2.5),
-  },
-  saveButtonText: { color: colors.accent, fontWeight: "700" },
-});
+function makeStyles(colors: ThemeColors) {
+  return StyleSheet.create({
+    root: { flex: 1, backgroundColor: colors.bg },
+    screen: { flex: 1 },
+    content: { padding: spacing(3), gap: spacing(3), maxWidth: 640, width: "100%", alignSelf: "center" },
+    subtitle: { color: colors.textMuted, fontFamily: fonts.body, fontSize: 15 },
+    controls: { gap: spacing(3) },
+    generateButton: {
+      backgroundColor: colors.text,
+      borderRadius: 4,
+      paddingVertical: spacing(1.75),
+      alignItems: "center",
+    },
+    generateButtonText: { color: colors.accentText, fontFamily: fonts.bodySemiBold, fontSize: 16 },
+    imageArea: {
+      borderTopWidth: 1,
+      borderBottomWidth: 1,
+      borderColor: colors.border,
+      paddingVertical: spacing(3),
+      minHeight: 320,
+      alignItems: "center",
+      justifyContent: "center",
+      gap: spacing(1.5),
+    },
+    shimmer: {
+      width: "100%",
+      aspectRatio: 1,
+      backgroundColor: colors.surfaceAlt,
+    },
+    image: { width: "100%", aspectRatio: 1 },
+    captionRow: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      width: "100%",
+    },
+    caption: { color: colors.textMuted, fontFamily: fonts.body, fontSize: 13 },
+    saveLink: { color: colors.accent, fontFamily: fonts.bodySemiBold, fontSize: 13 },
+    placeholderText: { color: colors.textMuted, fontFamily: fonts.body, textAlign: "center" },
+    errorText: { color: colors.bad, fontFamily: fonts.body, textAlign: "center" },
+  });
+}

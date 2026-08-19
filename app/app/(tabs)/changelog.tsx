@@ -1,9 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from "react-native";
 import Animated, { FadeInDown } from "react-native-reanimated";
-import { LinearGradient } from "expo-linear-gradient";
+import { Masthead } from "../../src/components/Masthead";
+import { NavDrawer } from "../../src/components/NavDrawer";
 import { ChangelogEntry, fetchChangelog } from "../../src/lib/api";
-import { colors, spacing } from "../../src/lib/theme";
+import { fonts, spacing, type ThemeColors } from "../../src/lib/theme";
+import { useTheme } from "../../src/lib/theme-context";
 
 function formatDate(iso: string) {
   const d = new Date(iso);
@@ -11,45 +13,38 @@ function formatDate(iso: string) {
     " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 
-function rateColor(rate: number) {
+function rateColor(rate: number, colors: ThemeColors) {
   if (rate >= 0.75) return colors.good;
   if (rate >= 0.5) return colors.warn;
   return colors.bad;
 }
 
-function EntryCard({ entry, index }: { entry: ChangelogEntry; index: number }) {
+function EntryRow({ entry, index, colors }: { entry: ChangelogEntry; index: number; colors: ThemeColors }) {
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   return (
-    <Animated.View
-      style={styles.card}
-      entering={FadeInDown.delay(index * 60).duration(300)}
-    >
-      <LinearGradient
-        colors={colors.accentGradient}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 0 }}
-        style={styles.cardTopBorder}
-      />
-      <View style={styles.cardHeader}>
-        <Text style={styles.cardDate}>{formatDate(entry.timestamp)}</Text>
-        <View style={[styles.badge, { backgroundColor: rateColor(entry.valid_rate) }]}>
-          <Text style={styles.badgeText}>{Math.round(entry.valid_rate * 100)}% valid</Text>
-        </View>
+    <Animated.View style={styles.row} entering={FadeInDown.delay(index * 60).duration(300)}>
+      <View style={styles.rowHeader}>
+        <Text style={styles.date}>{formatDate(entry.timestamp)}</Text>
+        <Text style={[styles.validRate, { color: rateColor(entry.valid_rate, colors) }]}>
+          {Math.round(entry.valid_rate * 100)}% valid
+        </Text>
       </View>
-      <Text style={styles.cardLabel}>{entry.label}</Text>
+      <Text style={styles.label}>{entry.label}</Text>
       <View style={styles.statsRow}>
-        <Stat label="Routes" value={String(entry.total)} />
-        <Stat label="Avg holds" value={entry.avg_holds.toFixed(1)} />
-        <Stat label="Avg span" value={`${Math.round(entry.avg_y_span)}px`} />
+        <Stat label="Routes" value={String(entry.total)} colors={colors} />
+        <Stat label="Avg holds" value={entry.avg_holds.toFixed(1)} colors={colors} />
+        <Stat label="Avg span" value={`${Math.round(entry.avg_y_span)}px`} colors={colors} />
         {entry.avg_critic_diff !== undefined ? (
-          <Stat label="Critic err" value={`${entry.avg_critic_diff.toFixed(2)} gr`} />
+          <Stat label="Critic err" value={`${entry.avg_critic_diff.toFixed(2)} gr`} colors={colors} />
         ) : null}
-        {entry.val_loss !== null ? <Stat label="Val loss" value={entry.val_loss.toFixed(3)} /> : null}
+        {entry.val_loss !== null ? <Stat label="Val loss" value={entry.val_loss.toFixed(3)} colors={colors} /> : null}
       </View>
     </Animated.View>
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function Stat({ label, value, colors }: { label: string; value: string; colors: ThemeColors }) {
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   return (
     <View style={styles.stat}>
       <Text style={styles.statValue}>{value}</Text>
@@ -59,6 +54,9 @@ function Stat({ label, value }: { label: string; value: string }) {
 }
 
 export default function ChangelogScreen() {
+  const { colors } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const [entries, setEntries] = useState<ChangelogEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -69,52 +67,50 @@ export default function ChangelogScreen() {
   }, []);
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-      <Text style={styles.title}>Changelog</Text>
-      <Text style={styles.subtitle}>Model quality over time, tracked automatically after each training run.</Text>
+    <View style={styles.root}>
+      <Masthead onMenuPress={() => setDrawerOpen(true)} />
+      <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+        <Text style={styles.title}>Changelog</Text>
+        <Text style={styles.subtitle}>Model quality over time, tracked automatically after each training run.</Text>
 
-      {error ? (
-        <Text style={styles.errorText}>{error}</Text>
-      ) : entries === null ? (
-        <ActivityIndicator color={colors.accent} style={{ marginTop: spacing(4) }} />
-      ) : entries.length === 0 ? (
-        <Text style={styles.errorText}>No evaluation history yet.</Text>
-      ) : (
-        entries.map((entry, i) => <EntryCard key={entry.timestamp + i} entry={entry} index={i} />)
-      )}
-    </ScrollView>
+        {error ? (
+          <Text style={styles.errorText}>{error}</Text>
+        ) : entries === null ? (
+          <ActivityIndicator color={colors.accent} style={{ marginTop: spacing(4) }} />
+        ) : entries.length === 0 ? (
+          <Text style={styles.errorText}>No evaluation history yet.</Text>
+        ) : (
+          entries.map((entry, i) => (
+            <EntryRow key={entry.timestamp + i} entry={entry} index={i} colors={colors} />
+          ))
+        )}
+      </ScrollView>
+      <NavDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />
+    </View>
   );
 }
 
-const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.bg },
-  content: { padding: spacing(3), gap: spacing(2), maxWidth: 640, width: "100%", alignSelf: "center" },
-  title: { color: colors.text, fontSize: 28, fontWeight: "800" },
-  subtitle: { color: colors.textMuted, fontSize: 14, marginBottom: spacing(1) },
-  errorText: { color: colors.textMuted, textAlign: "center", marginTop: spacing(4) },
-  card: {
-    backgroundColor: colors.surface,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: colors.border,
-    padding: spacing(2.5),
-    gap: spacing(1),
-    overflow: "hidden",
-  },
-  cardTopBorder: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    height: 3,
-  },
-  cardHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  cardDate: { color: colors.textMuted, fontSize: 12 },
-  badge: { paddingHorizontal: spacing(1.25), paddingVertical: spacing(0.5), borderRadius: 999 },
-  badgeText: { color: colors.accentText, fontSize: 12, fontWeight: "700" },
-  cardLabel: { color: colors.text, fontSize: 15, fontWeight: "600" },
-  statsRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing(2.5), marginTop: spacing(0.5) },
-  stat: { minWidth: 70 },
-  statValue: { color: colors.text, fontSize: 16, fontWeight: "700" },
-  statLabel: { color: colors.textMuted, fontSize: 11, textTransform: "uppercase" },
-});
+function makeStyles(colors: ThemeColors) {
+  return StyleSheet.create({
+    root: { flex: 1, backgroundColor: colors.bg },
+    screen: { flex: 1 },
+    content: { padding: spacing(3), maxWidth: 640, width: "100%", alignSelf: "center" },
+    title: { color: colors.text, fontFamily: fonts.display, fontSize: 26, marginBottom: spacing(0.5) },
+    subtitle: { color: colors.textMuted, fontFamily: fonts.body, fontSize: 14, marginBottom: spacing(3) },
+    errorText: { color: colors.textMuted, fontFamily: fonts.body, textAlign: "center", marginTop: spacing(4) },
+    row: {
+      borderBottomWidth: 1,
+      borderBottomColor: colors.border,
+      paddingVertical: spacing(2.5),
+      gap: spacing(0.75),
+    },
+    rowHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+    date: { color: colors.textMuted, fontFamily: fonts.body, fontSize: 12 },
+    validRate: { fontFamily: fonts.bodySemiBold, fontSize: 12 },
+    label: { color: colors.text, fontFamily: fonts.bodySemiBold, fontSize: 15 },
+    statsRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing(3), marginTop: spacing(0.5) },
+    stat: { minWidth: 70 },
+    statValue: { color: colors.text, fontFamily: fonts.display, fontSize: 17 },
+    statLabel: { color: colors.textMuted, fontFamily: fonts.body, fontSize: 11, textTransform: "uppercase" },
+  });
+}
