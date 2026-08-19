@@ -9,7 +9,19 @@ import json
 import os
 import logging
 
-CHANGELOG_PATH = os.path.join(os.path.dirname(__file__), "eval_history.jsonl")
+def _resource_path(filename):
+    """Resolves a shared resource by filename: checks this script's own directory
+    first (the flat layout inside the Docker image, where the Dockerfile COPies
+    everything - main.py included - into one directory), then the repo root (the
+    local-dev layout, where these files live at the top level and only main.py sits
+    in flask_stuff/). Falls back to the first candidate if neither exists, so the
+    existing "missing resource" handling below still has a path to report."""
+    here = os.path.dirname(__file__)
+    candidates = [os.path.join(here, filename), os.path.join(here, "..", filename)]
+    return next((p for p in candidates if os.path.exists(p)), candidates[0])
+
+
+CHANGELOG_PATH = _resource_path("eval_history.jsonl")
 
 app = Flask(__name__)
 CORS(app)
@@ -26,8 +38,8 @@ logging.basicConfig(level=logging.INFO)
 
 # Define required resources
 required_resources = {
-    "kilterboardImg.jpg": os.path.join(os.path.dirname(__file__), "kilterboardImg.jpg"),
-    "model_file": os.path.join(os.path.dirname(__file__), "kilter_setter_best.pt")
+    "kilterboardImg.jpg": _resource_path("kilterboardImg.jpg"),
+    "model_file": _resource_path("kilter_setter_best.pt"),
 }
 
 # Ensure the climbs directory exists
@@ -41,19 +53,6 @@ for resource_name, resource_path in required_resources.items():
     if not os.path.exists(resource_path):
         missing_resources.append(resource_name)
         logging.error(f"Missing required resource: {resource_name} at {resource_path}")
-
-# Check alternative locations for kilterboard image
-if "kilterboardImg.jpg" in missing_resources:
-    alt_paths = [
-        os.path.join(os.path.dirname(__file__), "mysite", "kilterboardImg.jpg"),
-        "kilterboardImg.jpg"
-    ]
-
-    for path in alt_paths:
-        if os.path.exists(path):
-            logging.info(f"Found kilterboardImg.jpg at alternative location: {path}")
-            missing_resources.remove("kilterboardImg.jpg")
-            break
 
 # Set global flag for resource availability
 resources_available = len(missing_resources) == 0
@@ -75,7 +74,7 @@ if resources_available:
     model.eval()
     logging.info("Model loaded and ready.")
 
-    critic_path = os.path.join(os.path.dirname(__file__), "critic_best.pt")
+    critic_path = _resource_path("critic_best.pt")
     critic = load_critic(critic_path, device=device)
     logging.info("Critic loaded, using it to rerank candidates." if critic else
                  "No critic checkpoint found, falling back to hold-count proxy.")
@@ -122,7 +121,7 @@ def generate():
         tokens = generate_route(model, grade=grade, angle=angle, critic=critic)
         climb = decode_holds(tokens)
 
-        img = drawClimb(climb)
+        img = drawClimb(climb, save=False)
 
         imgName = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + "_climb.png"
         img_path = os.path.join(climbs_dir, imgName)

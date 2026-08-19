@@ -1,0 +1,15 @@
+app/
+node_modules/
+.git/
+__pycache__/
+*.pyc
+flask_stuff/climbs/
+eval_reports/
+kilter_setter_latest.pt
+kilter_setter_latest_resume.pt
+kilter_setter_best_resume.pt
+train_log.txt
+test_new_model.py
+.idea/
+.DS_Store
+.env

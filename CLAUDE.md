@@ -27,12 +27,12 @@ python training.py
 python generate.py <grade> <angle>
 # Example: python generate.py 5 40
 
-# Run Flask server locally (for development)
-cd flask_stuff
-python main.py
+# Run Flask server locally (for development) - run from the repo root; PYTHONPATH=.
+# puts setter.py/generate.py/critic.py (at the root) on main.py's import path
+PYTHONPATH=. python flask_stuff/main.py
 
-# Deploy Flask app to Cloud Run
-cd flask_stuff
+# Deploy Flask app to Cloud Run - run from the repo root (Dockerfile lives there and
+# COPies shared modules from root + main.py from flask_stuff/)
 gcloud run deploy setter-api --source . --region us-central1 --allow-unauthenticated \
   --cpu=2 --memory=2Gi --concurrency=1 --timeout=300
 
@@ -131,9 +131,8 @@ The core model is a **Transformer-based sequence generator** (`setter.py`):
 - `generate.py` - Route generation and visualization
 - `preprocessing.py` - Data loading and tokenization
 - `evaluate.py` - Automated evaluation, HTML reports, `eval_history.jsonl` tracking
-- `flask_stuff/main.py` - Flask API server (Cloud Run)
-- `flask_stuff/setter.py`, `flask_stuff/generate.py`, `flask_stuff/critic.py` - duplicates for deployment
-- `flask_stuff/eval_history.jsonl` - duplicate of root `eval_history.jsonl`, kept in sync manually for the `/changelog` endpoint
+- `flask_stuff/main.py` - Flask API server (Cloud Run); imports `setter`/`generate`/`critic` and reads `kilterboardImg.jpg`/checkpoints/`eval_history.jsonl` straight from the repo root (see `_resource_path()`) - no more duplicated copies
+- `Dockerfile` (repo root) - builds the Cloud Run image; `COPY`s the shared modules/resources from root plus `flask_stuff/main.py`
 - `app/` - Expo frontend
 - `supabase/schema.sql` - Supabase schema (profiles, routes, ratings) - run once in the Supabase SQL editor
 - `kilterboardImg.jpg` - Base image for route visualization
@@ -152,6 +151,6 @@ Hold types are rendered with specific colors (lime=start, cyan=handholds, fuchsi
 ## Important Notes
 
 - Model checkpoints (`kilter_setter_best.pt`, `critic_best.pt`) are tracked with Git LFS (see `.gitattributes`) since the scaled-up model exceeds GitHub's 100MB limit
-- Flask deployment requires `kilterboardImg.jpg` and both checkpoints in `flask_stuff/`
+- Flask deployment (`Dockerfile`, repo root) requires `kilterboardImg.jpg` and both checkpoints at the repo root
 - Frontend expects `/generate` to return a PNG blob, not JSON
 - `VOCAB_SIZE = 16020` (max hold_id ~1600, with safety margin)

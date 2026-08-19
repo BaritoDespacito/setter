@@ -51,17 +51,23 @@ _IS_FOOT_TOKEN = (torch.arange(VOCAB_SIZE) % 10) == TYPE_TO_TOKEN[FOOT_HOLD_TYPE
 # Logit penalty applied to holds not reachable from anything placed so far. Soft, not
 # a hard mask: the base model was never trained with this constraint in mind, so a
 # hard cutoff risks zeroing out every option the model actually favors on a given
-# step. Tested empirically: 4.0 (the first value tried) compounds across an entire
-# generation's worth of steps and was strong enough to eliminate footholds from
-# generated routes almost entirely (0/3 test routes had any). 1.0 keeps composition
-# close to the unpenalized baseline; the actual spatial-coherence enforcement is still
-# mostly done by the hard validity-filter rejection in generate_route(), not this.
-GRAPH_ADJACENCY_PENALTY = 1.0
+# step. 4.0 (the first value tried) compounds across an entire generation's worth of
+# steps and was strong enough to eliminate footholds from generated routes almost
+# entirely. 1.0 was the next value tried and kept composition close to the unpenalized
+# baseline, but a post-batching re-sweep against evaluate.py's default grid (once
+# generating many candidates got cheap enough to make a real sweep practical) found
+# 2.0 clearly better on both axes: valid_rate 92%->98%, critic grade-match error
+# 3.86->3.43 raw difficulty units - strong enough spatial coherence pressure is doing
+# more useful work here than the hard validity-filter rejection alone was.
+GRAPH_ADJACENCY_PENALTY = 2.0
 
 # Nucleus (top-p) sampling threshold: only sample from the smallest set of tokens
 # whose cumulative probability reaches this, cutting off the long unlikely tail
 # (typos-of-a-hold, wildly implausible jumps) without hard-capping to a fixed k.
-TOP_P = 0.9
+# Lowered from 0.9 in the same post-batching sweep as GRAPH_ADJACENCY_PENALTY above -
+# 0.85 trims a bit more of the unlikely tail, part of the same valid_rate/critic-error
+# improvement (tested jointly with GRAPH_ADJACENCY_PENALTY=2.0, not independently).
+TOP_P = 0.85
 
 # Proportional bias toward/away from foot-only holds, nudging the running foot
 # fraction toward the model's own predict_foot_fraction() target. Small and capped
@@ -296,7 +302,7 @@ def _critic_grade_distances_batch(critic, token_lists, grade, angle, device):
     return (predicted_norm - target_norm).abs().tolist()
 
 
-def generate_route(model, grade, angle, max_length=None, temperature=0.8, device="cpu", max_attempts=8, critic=None):
+def generate_route(model, grade, angle, max_length=None, temperature=0.8, device="cpu", max_attempts=16, critic=None):
     """
     Generates a token-id route by sampling max_attempts candidates at once (one
     batched decode loop, not a sequential Python loop - see _sample_tokens_batch),

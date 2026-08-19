@@ -9,10 +9,13 @@ WORKDIR /app
 # already satisfied rather than pulling a second, different build.
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 
-COPY requirements.txt .
+COPY flask_stuff/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+# Shared modules/resources live at the repo root (single source of truth - no more
+# manually-synced duplicates under flask_stuff/); only main.py itself is Flask-specific.
+COPY setter.py generate.py critic.py kilterboardImg.jpg kilter_setter_best.pt critic_best.pt eval_history.jsonl ./
+COPY flask_stuff/main.py .
 
 # Cloud Run injects $PORT (default 8080) and requires the container to listen on it.
 ENV PORT=8080
