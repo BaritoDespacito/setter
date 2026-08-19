@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from "react-native";
+import Animated, { FadeInDown } from "react-native-reanimated";
+import { LinearGradient } from "expo-linear-gradient";
 import { ChangelogEntry, fetchChangelog } from "../../src/lib/api";
 import { colors, spacing } from "../../src/lib/theme";
 
@@ -15,9 +17,18 @@ function rateColor(rate: number) {
   return colors.bad;
 }
 
-function EntryCard({ entry }: { entry: ChangelogEntry }) {
+function EntryCard({ entry, index }: { entry: ChangelogEntry; index: number }) {
   return (
-    <View style={styles.card}>
+    <Animated.View
+      style={styles.card}
+      entering={FadeInDown.delay(index * 60).duration(300)}
+    >
+      <LinearGradient
+        colors={colors.accentGradient}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 0 }}
+        style={styles.cardTopBorder}
+      />
       <View style={styles.cardHeader}>
         <Text style={styles.cardDate}>{formatDate(entry.timestamp)}</Text>
         <View style={[styles.badge, { backgroundColor: rateColor(entry.valid_rate) }]}>
@@ -34,7 +45,7 @@ function EntryCard({ entry }: { entry: ChangelogEntry }) {
         ) : null}
         {entry.val_loss !== null ? <Stat label="Val loss" value={entry.val_loss.toFixed(3)} /> : null}
       </View>
-    </View>
+    </Animated.View>
   );
 }
 
@@ -69,7 +80,7 @@ export default function ChangelogScreen() {
       ) : entries.length === 0 ? (
         <Text style={styles.errorText}>No evaluation history yet.</Text>
       ) : (
-        entries.map((entry, i) => <EntryCard key={entry.timestamp + i} entry={entry} />)
+        entries.map((entry, i) => <EntryCard key={entry.timestamp + i} entry={entry} index={i} />)
       )}
     </ScrollView>
   );
@@ -88,6 +99,14 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     padding: spacing(2.5),
     gap: spacing(1),
+    overflow: "hidden",
+  },
+  cardTopBorder: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 3,
   },
   cardHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   cardDate: { color: colors.textMuted, fontSize: 12 },

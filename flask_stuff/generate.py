@@ -42,7 +42,7 @@ _VALID_TOKEN_MASK = build_valid_token_mask(VOCAB_SIZE)
 # Cached once per process: hold_id -> set of hold_ids within reach of it, and a
 # per-token lookup of which hold_id each vocab entry corresponds to (0 for non-hold
 # tokens). Used to softly steer sampling toward holds connected to the route built so
-# far - see _sample_tokens.
+# far - see _sample_tokens_batch.
 _HOLD_ADJACENCY = build_hold_adjacency()
 _HOLD_ID_OF_TOKEN = torch.arange(VOCAB_SIZE) // 10
 _IS_FOOT_TOKEN = (torch.arange(VOCAB_SIZE) % 10) == TYPE_TO_TOKEN[FOOT_HOLD_TYPE]
@@ -83,26 +83,45 @@ def _nucleus_filter(probs, top_p):
     return filtered / filtered.sum(dim=-1, keepdim=True)
 
 
-def _sample_tokens(model, grade, angle, max_length, temperature, device, top_p=TOP_P):
+def _sample_tokens_batch(model, grade, angle, max_length, temperatures, device, top_p=TOP_P):
+    """
+    Generates B independent attempts (B = len(temperatures)) at once, running every
+    decode step as a single batched forward pass instead of B separate sequential
+    generations - the actual cost of generation is the transformer forward pass, so
+    batching the attempts (rather than looping over them) turns B sequential passes
+    per step into 1, without changing what gets generated (same per-row sampling
+    logic/state as the original single-sequence version, just carrying a batch
+    dimension throughout).
+
+    Rows that finish (emit END) before others keep getting fed PAD for the remaining
+    steps so the whole batch stays a dense tensor; each row's own placed-hold
+    bookkeeping simply stops advancing once that row is finished.
+    """
+    B = len(temperatures)
     grade_norm = v_grade_to_normalized_difficulty(grade)
     angle_norm = angle / 70.0
 
-    input_ids = torch.tensor([[START_TOKEN_ID]], device=device)
-    grade_tensor = torch.tensor([grade_norm], device=device)
-    angle_tensor = torch.tensor([angle_norm], device=device)
+    input_ids = torch.full((B, 1), START_TOKEN_ID, device=device)
+    grade_tensor = torch.full((B,), grade_norm, device=device)
+    angle_tensor = torch.full((B,), angle_norm, device=device)
+    temperature_tensor = torch.tensor(temperatures, device=device).unsqueeze(1)  # (B, 1)
 
     mask = _VALID_TOKEN_MASK.to(device)
     hold_id_of_token = _HOLD_ID_OF_TOKEN.to(device)
     is_foot_token = _IS_FOOT_TOKEN.to(device)
 
     with torch.no_grad():
-        target_foot_fraction = model.predict_foot_fraction(grade_tensor, angle_tensor).item()
-    target_foot_fraction = max(0.0, min(1.0, target_foot_fraction))
+        target_foot_fraction = model.predict_foot_fraction(grade_tensor, angle_tensor)
+    target_foot_fraction = target_foot_fraction.clamp(0.0, 1.0)
 
-    placed_hold_ids = set()
-    placed_foot_count = 0
+    placed_hold_ids = [set() for _ in range(B)]
+    placed_foot_count = [0] * B
+    finished = torch.zeros(B, dtype=torch.bool, device=device)
 
     for _ in range(max_length):
+        if finished.all():
+            break
+
         with torch.no_grad():
             logits = model(
                 input_ids=input_ids,
@@ -114,45 +133,67 @@ def _sample_tokens(model, grade, angle, max_length, temperature, device, top_p=T
         next_logits = logits[:, -1].clone()
         next_logits[:, ~mask] = float("-inf")
 
-        if placed_hold_ids:
-            placed_tensor = torch.tensor(list(placed_hold_ids), device=device)
-            # A physical hold can never legitimately appear twice (even with a
-            # different role) - this is a hard rule, not a preference, so a hard
-            # mask is correct here (unlike the graph-adjacency case below).
-            is_placed = torch.isin(hold_id_of_token, placed_tensor)
-            next_logits[:, is_placed] = float("-inf")
+        has_placed = torch.tensor([len(placed_hold_ids[b]) > 0 for b in range(B)], device=device)
+        if has_placed.any():
+            is_placed_batch = torch.zeros(B, next_logits.size(-1), dtype=torch.bool, device=device)
+            reachable_batch = torch.zeros(B, next_logits.size(-1), dtype=torch.bool, device=device)
+            for b in range(B):
+                if finished[b] or not placed_hold_ids[b]:
+                    continue
+                placed_tensor = torch.tensor(list(placed_hold_ids[b]), device=device)
+                # A physical hold can never legitimately appear twice (even with a
+                # different role) - this is a hard rule, not a preference, so a hard
+                # mask is correct here (unlike the graph-adjacency case below).
+                is_placed_batch[b] = torch.isin(hold_id_of_token, placed_tensor)
 
-            reachable = set()
-            for hid in placed_hold_ids:
-                reachable |= _HOLD_ADJACENCY.get(hid, set())
-            if reachable:
-                reachable_tensor = torch.tensor(list(reachable), device=device)
-                is_reachable = torch.isin(hold_id_of_token, reachable_tensor)
-                penalize = mask.clone()
-                penalize[END_TOKEN_ID] = False  # never penalize being able to stop
-                penalize &= ~is_reachable
-                next_logits[:, penalize] -= GRAPH_ADJACENCY_PENALTY
+                reachable = set()
+                for hid in placed_hold_ids[b]:
+                    reachable |= _HOLD_ADJACENCY.get(hid, set())
+                if reachable:
+                    reachable_tensor = torch.tensor(list(reachable), device=device)
+                    reachable_batch[b] = torch.isin(hold_id_of_token, reachable_tensor)
 
-        if placed_hold_ids:
-            current_fraction = placed_foot_count / len(placed_hold_ids)
-            bias = max(-FOOT_BIAS_MAX, min(FOOT_BIAS_MAX,
-                       (target_foot_fraction - current_fraction) * FOOT_BIAS_SCALE))
-            if bias != 0.0:
-                next_logits[:, is_foot_token] += bias
+            next_logits[is_placed_batch] = float("-inf")
 
-        probs = torch.softmax(next_logits / temperature, dim=-1)
+            penalize = mask.unsqueeze(0).expand(B, -1).clone()
+            penalize[:, END_TOKEN_ID] = False  # never penalize being able to stop
+            penalize &= ~reachable_batch
+            penalize[~has_placed] = False
+            next_logits[penalize] -= GRAPH_ADJACENCY_PENALTY
+
+            bias = torch.zeros(B, device=device)
+            for b in range(B):
+                if has_placed[b]:
+                    current_fraction = placed_foot_count[b] / len(placed_hold_ids[b])
+                    bias[b] = (target_foot_fraction[b] - current_fraction) * FOOT_BIAS_SCALE
+            bias = bias.clamp(-FOOT_BIAS_MAX, FOOT_BIAS_MAX)
+            next_logits[:, is_foot_token] += bias.unsqueeze(1)
+
+        probs = torch.softmax(next_logits / temperature_tensor, dim=-1)
         probs = _nucleus_filter(probs, top_p)
-        next_token = torch.multinomial(probs, num_samples=1)  # Random sample
+        next_token = torch.multinomial(probs, num_samples=1)  # (B, 1)
+
+        # Rows already finished keep emitting PAD regardless of what they'd have sampled,
+        # so input_ids stays dense/correct-length without those rows influencing anything
+        # further.
+        next_token = torch.where(
+            finished.unsqueeze(1), torch.full_like(next_token, PAD_TOKEN_ID), next_token
+        )
         input_ids = torch.cat([input_ids, next_token], dim=1)
 
-        token_id = next_token.item()
-        if token_id == END_TOKEN_ID:
-            break
-        placed_hold_ids.add(token_id // 10)
-        if token_id % 10 == TYPE_TO_TOKEN[FOOT_HOLD_TYPE]:
-            placed_foot_count += 1
+        for b in range(B):
+            if finished[b]:
+                continue
+            token_id = next_token[b, 0].item()
+            if token_id == END_TOKEN_ID:
+                continue
+            placed_hold_ids[b].add(token_id // 10)
+            if token_id % 10 == TYPE_TO_TOKEN[FOOT_HOLD_TYPE]:
+                placed_foot_count[b] += 1
 
-    return input_ids[0].tolist()
+        finished = finished | (next_token.squeeze(1) == END_TOKEN_ID)
+
+    return [input_ids[b].tolist() for b in range(B)]
 
 
 def _predict_target_length(model, grade, angle, device):
@@ -228,7 +269,6 @@ def _route_is_valid(holds):
         return False
     if len(finish_positions) == 2 and _distance(*finish_positions) > TWO_HAND_MAX_SPAN:
         return False
-
     for i, (x, y) in enumerate(positions):
         nearest = min(
             ((x - ox) ** 2 + (y - oy) ** 2) ** 0.5
@@ -241,34 +281,37 @@ def _route_is_valid(holds):
     return True
 
 
-def _critic_grade_distance(critic, tokens, grade, angle, device):
-    """How far off (in normalized difficulty) the critic thinks this route is from
-    the requested grade - lower is a better match."""
+def _critic_grade_distances_batch(critic, token_lists, grade, angle, device):
+    """How far off (in normalized difficulty) the critic thinks each candidate route
+    is from the requested grade - lower is a better match. Batched: one forward pass
+    over all candidates instead of one call per candidate. token_lists must all be the
+    same length (true for anything coming out of _sample_tokens_batch, since every row
+    in a batch shares the same seq_len)."""
     target_norm = v_grade_to_normalized_difficulty(grade)
-    route_ids = torch.tensor([tokens], device=device)
-    angle_tensor = torch.tensor([angle / 70.0], device=device)
+    route_ids = torch.tensor(token_lists, device=device)
+    angle_tensor = torch.full((len(token_lists),), angle / 70.0, device=device)
     with torch.no_grad():
-        predicted_norm = critic(route_ids, angle_tensor).item()
-    return abs(predicted_norm - target_norm)
+        predicted_norm = critic(route_ids, angle_tensor)
+    return (predicted_norm - target_norm).abs().tolist()
 
 
 def generate_route(model, grade, angle, max_length=None, temperature=0.8, device="cpu", max_attempts=8, critic=None):
     """
-    Generates a token-id route, retrying (with a higher temperature each attempt) up to
-    max_attempts times.
+    Generates a token-id route by sampling max_attempts candidates at once (one
+    batched decode loop, not a sequential Python loop - see _sample_tokens_batch),
+    each at a slightly higher temperature than the last, then picking the best one.
 
     Without a critic: among attempts that pass the validity filter, returns the one
-    whose hold count is closest to the model's own predict_length target (an early exit
-    fires as soon as a valid attempt is within 1 hold of that target, to avoid always
-    paying for every attempt); if none pass, returns the closest-to-target attempt
-    overall as a best-effort result, rather than just whichever attempt happened last.
+    whose hold count is closest to the model's own predict_length target; if none
+    pass, returns the closest-to-target attempt overall as a best-effort result,
+    rather than just whichever attempt happened last.
 
     With a critic (see critic.py): the hold-count proxy is replaced with something more
-    direct - every attempt is generated (no early exit, since the point is comparing
-    candidates), then the critic judges each *finished* route and whichever one it
-    thinks actually looks closest to the requested grade wins. This is a better proxy
-    for "does this route look right" than hold count, since the critic looks at the
-    whole route bidirectionally rather than inferring from a single scalar target.
+    direct - the critic judges each *finished* route (also batched - one forward pass
+    over every candidate) and whichever one it thinks actually looks closest to the
+    requested grade wins. This is a better proxy for "does this route look right" than
+    hold count, since the critic looks at the whole route bidirectionally rather than
+    inferring from a single scalar target.
 
     If max_length isn't given, it's derived from the predict_length target plus slack,
     instead of a fixed cap - so a V1 and a V10 aren't generated with the same length
@@ -284,22 +327,22 @@ def generate_route(model, grade, angle, max_length=None, temperature=0.8, device
     if max_length is None:
         max_length = int(max(8, min(45, round(predicted_holds * 1.4) + 3)))
 
+    temperatures = [temperature * (1.0 + 0.1 * attempt) for attempt in range(max_attempts)]
+    all_tokens = _sample_tokens_batch(model, grade, angle, max_length, temperatures, device)
+
     candidates = []  # (tokens, valid, hold_count)
-    for attempt in range(max_attempts):
-        attempt_temperature = temperature * (1.0 + 0.1 * attempt)
-        tokens = _sample_tokens(model, grade, angle, max_length, attempt_temperature, device)
+    for tokens in all_tokens:
         climb = decode_holds(tokens)
         valid = _route_is_valid(climb)
         hold_count = len([h for h in climb if h not in ("[START]", "[END]")])
         candidates.append((tokens, valid, hold_count))
-        if critic is None and valid and abs(hold_count - predicted_holds) <= 1:
-            return tokens
 
     valid_candidates = [c for c in candidates if c[1]]
     pool = valid_candidates if valid_candidates else candidates
 
     if critic is not None:
-        best = min(pool, key=lambda c: _critic_grade_distance(critic, c[0], grade, angle, device))
+        distances = _critic_grade_distances_batch(critic, [c[0] for c in pool], grade, angle, device)
+        best = pool[min(range(len(pool)), key=lambda i: distances[i])]
     else:
         best = min(pool, key=lambda c: abs(c[2] - predicted_holds))
     return best[0]

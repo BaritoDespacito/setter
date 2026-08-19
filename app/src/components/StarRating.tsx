@@ -16,7 +16,7 @@ export function StarRating({ value, onRate, size = 20 }: StarRatingProps) {
           <Ionicons
             name={star <= Math.round(value) ? "star" : "star-outline"}
             size={size}
-            color={colors.warn}
+            color={colors.accent2}
           />
         </Pressable>
       ))}

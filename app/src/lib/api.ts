@@ -12,7 +12,12 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return btoa(binary);
 }
 
-export async function generateRoute(grade: number, angle: number): Promise<string> {
+export interface GeneratedRoute {
+  dataUri: string;
+  bytes: ArrayBuffer;
+}
+
+export async function generateRoute(grade: number, angle: number): Promise<GeneratedRoute> {
   const resp = await fetch(`${API_URL}/generate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -30,8 +35,8 @@ export async function generateRoute(grade: number, angle: number): Promise<strin
     throw new ApiError(message);
   }
 
-  const buffer = await resp.arrayBuffer();
-  return `data:image/png;base64,${arrayBufferToBase64(buffer)}`;
+  const bytes = await resp.arrayBuffer();
+  return { dataUri: `data:image/png;base64,${arrayBufferToBase64(bytes)}`, bytes };
 }
 
 export interface PerGradeStat {

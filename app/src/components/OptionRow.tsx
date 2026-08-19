@@ -1,4 +1,9 @@
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import Animated, {
+  useAnimatedStyle,
+  withSpring,
+  withTiming,
+} from "react-native-reanimated";
 import { colors, spacing } from "../lib/theme";
 
 interface OptionRowProps {
@@ -14,22 +19,32 @@ export function OptionRow({ label, options, value, onChange, formatOption }: Opt
     <View style={styles.container}>
       <Text style={styles.label}>{label}</Text>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips}>
-        {options.map((option) => {
-          const selected = option === value;
-          return (
-            <Pressable
-              key={option}
-              onPress={() => onChange(option)}
-              style={[styles.chip, selected && styles.chipSelected]}
-            >
-              <Text style={[styles.chipText, selected && styles.chipTextSelected]}>
-                {formatOption ? formatOption(option) : option}
-              </Text>
-            </Pressable>
-          );
-        })}
+        {options.map((option) => (
+          <Chip
+            key={option}
+            selected={option === value}
+            label={formatOption ? formatOption(option) : String(option)}
+            onPress={() => onChange(option)}
+          />
+        ))}
       </ScrollView>
     </View>
+  );
+}
+
+function Chip({ selected, label, onPress }: { selected: boolean; label: string; onPress: () => void }) {
+  const animatedStyle = useAnimatedStyle(() => ({
+    backgroundColor: withTiming(selected ? colors.accent : colors.surfaceAlt, { duration: 180 }),
+    borderColor: withTiming(selected ? colors.accent : colors.border, { duration: 180 }),
+    transform: [{ scale: withSpring(selected ? 1.06 : 1, { damping: 12, stiffness: 220 }) }],
+  }));
+
+  return (
+    <Pressable onPress={onPress}>
+      <Animated.View style={[styles.chip, animatedStyle]}>
+        <Text style={[styles.chipText, selected && styles.chipTextSelected]}>{label}</Text>
+      </Animated.View>
+    </Pressable>
   );
 }
 
@@ -50,10 +65,6 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceAlt,
     borderWidth: 1,
     borderColor: colors.border,
-  },
-  chipSelected: {
-    backgroundColor: colors.accent,
-    borderColor: colors.accent,
   },
   chipText: { color: colors.text, fontWeight: "600" },
   chipTextSelected: { color: colors.accentText },

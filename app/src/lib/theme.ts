@@ -1,15 +1,18 @@
 export const colors = {
-  bg: "#0E1414",
-  surface: "#161F1E",
-  surfaceAlt: "#1E2B29",
-  border: "#2A3836",
-  text: "#F2F5F4",
-  textMuted: "#9DB0AD",
-  accent: "#2F9E96",
-  accentText: "#03110F",
+  bg: "#0B1110",
+  surface: "#141D1C",
+  surfaceAlt: "#1D2C29",
+  border: "#2E3D3A",
+  text: "#F5F7F6",
+  textMuted: "#A3B6B2",
+  accent: "#35B0A6",
+  accentText: "#03130F",
+  accent2: "#FF8A4C",
+  accent2Text: "#1C0900",
   good: "#4CC38A",
   warn: "#E5B94E",
   bad: "#E0685C",
+  accentGradient: ["#35B0A6", "#1E7A72"] as const,
 };
 
 export const spacing = (n: number) => n * 8;

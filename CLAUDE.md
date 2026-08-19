@@ -33,7 +33,8 @@ python main.py
 
 # Deploy Flask app to Cloud Run
 cd flask_stuff
-gcloud run deploy setter-api --source . --region us-central1 --allow-unauthenticated
+gcloud run deploy setter-api --source . --region us-central1 --allow-unauthenticated \
+  --cpu=2 --memory=2Gi --concurrency=1 --timeout=300
 
 # Track model quality over time (also runs automatically at the end of training.py)
 python evaluate.py [checkpoint] --label "..." [--no-report] [--no-critic] [--history]

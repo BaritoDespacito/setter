@@ -14,6 +14,13 @@ CHANGELOG_PATH = os.path.join(os.path.dirname(__file__), "eval_history.jsonl")
 app = Flask(__name__)
 CORS(app)
 
+# Sized to the --cpu=2 Cloud Run allocation (see CLAUDE.md deploy command). Intra-op
+# parallelism should roughly match vCPU count; interop stays at 1 since this app never
+# runs concurrent independent torch graphs per process - waitress handles request
+# concurrency, not torch.
+torch.set_num_threads(2)
+torch.set_num_interop_threads(1)
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 

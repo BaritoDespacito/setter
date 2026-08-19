@@ -1,6 +1,7 @@
 import { router } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import Animated, { FadeInDown } from "react-native-reanimated";
 import { StarRating } from "../../src/components/StarRating";
 import { useAuth } from "../../src/lib/auth";
 import { deleteRoute, fetchSavedRoutes, rateRoute, SavedRoute } from "../../src/lib/routes";
@@ -21,6 +22,28 @@ export default function SavedScreen() {
   useEffect(() => {
     load();
   }, [load]);
+
+  const handleRate = (routeId: string, stars: number) => {
+    if (!user) return;
+    // Show the tap immediately - the round trip to persist it shouldn't block the UI,
+    // and re-fetching the whole list afterward would also drag in every route's image
+    // again for no reason.
+    const previous = routes;
+    setRoutes((rs) => rs?.map((r) => (r.id === routeId ? { ...r, my_stars: stars } : r)) ?? rs);
+    rateRoute(routeId, user.id, stars).catch(() => {
+      setRoutes(previous);
+      setError("Couldn't save rating.");
+    });
+  };
+
+  const handleDelete = (routeId: string) => {
+    const previous = routes;
+    setRoutes((rs) => rs?.filter((r) => r.id !== routeId) ?? rs);
+    deleteRoute(routeId).catch(() => {
+      setRoutes(previous);
+      setError("Couldn't delete route.");
+    });
+  };
 
   if (!configured) {
     return (
@@ -60,29 +83,25 @@ export default function SavedScreen() {
       ) : routes.length === 0 ? (
         <Text style={styles.msg}>No saved routes yet — generate one and tap "Save route".</Text>
       ) : (
-        routes.map((r) => (
-          <View key={r.id} style={styles.card}>
-            <Image source={{ uri: r.image_data_uri }} style={styles.image} resizeMode="contain" />
+        routes.map((r, i) => (
+          <Animated.View key={r.id} style={styles.card} entering={FadeInDown.delay(i * 60).duration(300)}>
+            <Image source={{ uri: r.image_url }} style={styles.image} resizeMode="contain" />
             <View style={styles.cardBody}>
               <Text style={styles.cardTitle}>V{r.grade} · {r.angle}°</Text>
               <StarRating
                 value={r.my_stars ?? r.avg_stars ?? 0}
-                onRate={(stars) =>
-                  rateRoute(r.id, user.id, stars).then(load).catch(() => setError("Couldn't save rating."))
-                }
+                onRate={(stars) => handleRate(r.id, stars)}
               />
               {r.rating_count > 0 ? (
                 <Text style={styles.ratingSummary}>
                   {r.avg_stars?.toFixed(1)} avg ({r.rating_count})
                 </Text>
               ) : null}
-              <Pressable
-                onPress={() => deleteRoute(r.id).then(load).catch(() => setError("Couldn't delete route."))}
-              >
+              <Pressable onPress={() => handleDelete(r.id)}>
                 <Text style={styles.deleteText}>Delete</Text>
               </Pressable>
             </View>
-          </View>
+          </Animated.View>
         ))
       )}
     </ScrollView>
