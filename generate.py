@@ -77,6 +77,26 @@ TOP_P = 0.85
 FOOT_BIAS_SCALE = 2.0
 FOOT_BIAS_MAX = 1.0
 
+# Std-dev (in the same normalized-coordinate units as Setter's waypoints, i.e.
+# fraction of BOARD_COORD_NORM=1450px - 0.03 is ~45px) of Gaussian noise added to
+# predict_waypoints()'s output, independently per batched attempt. waypoint_head is
+# trained deterministically (plain MSE against real waypoints, see training.py), so
+# without this every attempt in a batch would condition on the *identical* skeleton
+# (grade/angle are the same across attempts, only temperature varies) - collapsing
+# plan diversity down to whatever stage-2 sampling temperature alone provides.
+# Starting value, not yet tuned against real generations post-retrain.
+WAYPOINT_NOISE_STD = 0.03
+
+# How many attempts-batches generate_route() will try before giving up and accepting
+# a best-effort (possibly invalid) result. Only ever matters on the rare grade/angle
+# combos where *every* attempt in a round fails validity - the vast majority of calls
+# succeed in round 1 and never pay for a second round, so this bounds worst-case
+# latency (roughly MAX_ROUNDS x a normal call) without materially changing average
+# latency. 2, not higher: a persistently-failing grade/angle is more likely a genuine
+# hard case than bad luck, and unbounded retrying would risk turning a rare slow
+# request into a very slow one for no real quality gain.
+MAX_ROUNDS = 2
+
 
 def _nucleus_filter(probs, top_p):
     sorted_probs, sorted_idx = torch.sort(probs, descending=True, dim=-1)
@@ -100,6 +120,13 @@ def _sample_tokens_batch(model, grade, angle, max_length, temperatures, device, 
     logic/state as the original single-sequence version, just carrying a batch
     dimension throughout).
 
+    Also KV-cached (see Setter.forward_cache_init/forward_cache_step in setter.py):
+    each step only computes attention for the one new token against a cache of every
+    previous position's key/value projections, instead of recomputing attention over
+    the whole sequence built so far - turns an O(n^2) generation into O(n). Verified
+    numerically equivalent to the plain forward() path in test_kv_cache.py before
+    being wired in here.
+
     Rows that finish (emit END) before others keep getting fed PAD for the remaining
     steps so the whole batch stays a dense tensor; each row's own placed-hold
     bookkeeping simply stops advancing once that row is finished.
@@ -108,7 +135,6 @@ def _sample_tokens_batch(model, grade, angle, max_length, temperatures, device, 
     grade_norm = v_grade_to_normalized_difficulty(grade)
     angle_norm = angle / 70.0
 
-    input_ids = torch.full((B, 1), START_TOKEN_ID, device=device)
     grade_tensor = torch.full((B,), grade_norm, device=device)
     angle_tensor = torch.full((B,), angle_norm, device=device)
     temperature_tensor = torch.tensor(temperatures, device=device).unsqueeze(1)  # (B, 1)
@@ -121,21 +147,24 @@ def _sample_tokens_batch(model, grade, angle, max_length, temperatures, device, 
         target_foot_fraction = model.predict_foot_fraction(grade_tensor, angle_tensor)
     target_foot_fraction = target_foot_fraction.clamp(0.0, 1.0)
 
+    # Stage-1 plan: same predicted skeleton for every attempt (grade/angle are
+    # identical across the batch), perturbed independently per attempt so stage-2
+    # still gets per-attempt diversity - see WAYPOINT_NOISE_STD above.
+    with torch.no_grad():
+        waypoints = model.predict_waypoints(grade_tensor, angle_tensor)
+    waypoints = waypoints + WAYPOINT_NOISE_STD * torch.randn_like(waypoints)
+
     placed_hold_ids = [set() for _ in range(B)]
     placed_foot_count = [0] * B
     finished = torch.zeros(B, dtype=torch.bool, device=device)
+    all_tokens = [torch.full((B, 1), START_TOKEN_ID, device=device)]
 
-    for _ in range(max_length):
+    with torch.no_grad():
+        logits, cache, cond_emb = model.forward_cache_init(grade_tensor, angle_tensor, waypoints)
+
+    for step in range(max_length):
         if finished.all():
             break
-
-        with torch.no_grad():
-            logits = model(
-                input_ids=input_ids,
-                grade=grade_tensor,
-                angle=angle_tensor,
-                labels=None
-            )
 
         next_logits = logits[:, -1].clone()
         next_logits[:, ~mask] = float("-inf")
@@ -186,7 +215,7 @@ def _sample_tokens_batch(model, grade, angle, max_length, temperatures, device, 
         next_token = torch.where(
             finished.unsqueeze(1), torch.full_like(next_token, PAD_TOKEN_ID), next_token
         )
-        input_ids = torch.cat([input_ids, next_token], dim=1)
+        all_tokens.append(next_token)
 
         for b in range(B):
             if finished[b]:
@@ -200,18 +229,30 @@ def _sample_tokens_batch(model, grade, angle, max_length, temperatures, device, 
 
         finished = finished | (next_token.squeeze(1) == END_TOKEN_ID)
 
+        if step < max_length - 1:
+            with torch.no_grad():
+                logits, cache = model.forward_cache_step(next_token, step + 1, cond_emb, cache)
+
+    input_ids = torch.cat(all_tokens, dim=1)
     return [input_ids[b].tolist() for b in range(B)]
 
 
-def _predict_target_length(model, grade, angle, device):
+def _sample_target_lengths(model, grade, angle, device, n):
+    """Samples n independent hold-count targets (real units, one per batched attempt)
+    from the model's predicted length *distribution*, instead of using a single point
+    estimate for every attempt. Real hold count is extremely variable even within one
+    grade/angle - always targeting the conditional mean would pull every attempt
+    toward "medium length" regardless of how wide the real spread actually is."""
     grade_norm = v_grade_to_normalized_difficulty(grade)
     angle_norm = angle / 70.0
     with torch.no_grad():
-        pred = model.predict_length(
-            torch.tensor([grade_norm], device=device),
-            torch.tensor([angle_norm], device=device),
+        mean, log_std = model.predict_length(
+            torch.full((n,), grade_norm, device=device),
+            torch.full((n,), angle_norm, device=device),
         )
-    return pred.item() * NUM_HOLDS_NORM
+        samples = mean + log_std.exp() * torch.randn(n, device=device)
+    lengths = (samples * NUM_HOLDS_NORM).clamp(4.0, 45.0)
+    return lengths.tolist()
 
 
 # Max pixel distance from a hold to its nearest neighbor in the route before it's
@@ -309,7 +350,9 @@ def generate_route(model, grade, angle, max_length=None, temperature=0.8, device
     each at a slightly higher temperature than the last, then picking the best one.
 
     Without a critic: among attempts that pass the validity filter, returns the one
-    whose hold count is closest to the model's own predict_length target; if none
+    whose hold count is closest to its *own* sampled length target (see
+    _sample_target_lengths - each attempt gets an independent target sampled from the
+    model's predicted length distribution, not one shared point estimate); if none
     pass, returns the closest-to-target attempt overall as a best-effort result,
     rather than just whichever attempt happened last.
 
@@ -320,9 +363,14 @@ def generate_route(model, grade, angle, max_length=None, temperature=0.8, device
     hold count, since the critic looks at the whole route bidirectionally rather than
     inferring from a single scalar target.
 
-    If max_length isn't given, it's derived from the predict_length target plus slack,
-    instead of a fixed cap - so a V1 and a V10 aren't generated with the same length
-    budget.
+    If max_length isn't given, it's derived from the largest sampled length target
+    plus slack, instead of a fixed cap - so a V1 and a V10 aren't generated with the
+    same length budget, and no attempt gets truncated short of its own target.
+
+    Retries (up to MAX_ROUNDS total attempts-batches) if every attempt in a round
+    fails the validity filter, instead of always accepting a known-invalid result on
+    the first bad batch - capped so a persistently-hard grade/angle can't blow up
+    worst-case latency, not retried until success.
     """
     if not (MIN_GRADE <= grade <= MAX_GRADE):
         raise ValueError(f"grade must be between {MIN_GRADE} and {MAX_GRADE}, got {grade}")
@@ -330,19 +378,24 @@ def generate_route(model, grade, angle, max_length=None, temperature=0.8, device
         raise ValueError(f"angle must be between {MIN_ANGLE} and {MAX_ANGLE}, got {angle}")
 
     model.eval()
-    predicted_holds = _predict_target_length(model, grade, angle, device)
+    target_lengths = _sample_target_lengths(model, grade, angle, device, max_attempts)
     if max_length is None:
-        max_length = int(max(8, min(45, round(predicted_holds * 1.4) + 3)))
+        max_length = int(max(8, min(45, round(max(target_lengths) * 1.4) + 3)))
 
-    temperatures = [temperature * (1.0 + 0.1 * attempt) for attempt in range(max_attempts)]
-    all_tokens = _sample_tokens_batch(model, grade, angle, max_length, temperatures, device)
+    candidates = []  # (tokens, valid, hold_count, target_length)
+    for round_num in range(MAX_ROUNDS):
+        temperatures = [temperature * (1.0 + 0.1 * attempt) for attempt in range(max_attempts)]
+        all_tokens = _sample_tokens_batch(model, grade, angle, max_length, temperatures, device)
 
-    candidates = []  # (tokens, valid, hold_count)
-    for tokens in all_tokens:
-        climb = decode_holds(tokens)
-        valid = _route_is_valid(climb)
-        hold_count = len([h for h in climb if h not in ("[START]", "[END]")])
-        candidates.append((tokens, valid, hold_count))
+        candidates = []
+        for tokens, target_length in zip(all_tokens, target_lengths):
+            climb = decode_holds(tokens)
+            valid = _route_is_valid(climb)
+            hold_count = len([h for h in climb if h not in ("[START]", "[END]")])
+            candidates.append((tokens, valid, hold_count, target_length))
+
+        if any(c[1] for c in candidates):
+            break
 
     valid_candidates = [c for c in candidates if c[1]]
     pool = valid_candidates if valid_candidates else candidates
@@ -351,7 +404,7 @@ def generate_route(model, grade, angle, max_length=None, temperature=0.8, device
         distances = _critic_grade_distances_batch(critic, [c[0] for c in pool], grade, angle, device)
         best = pool[min(range(len(pool)), key=lambda i: distances[i])]
     else:
-        best = min(pool, key=lambda c: abs(c[2] - predicted_holds))
+        best = min(pool, key=lambda c: abs(c[2] - c[3]))
     return best[0]
 
 

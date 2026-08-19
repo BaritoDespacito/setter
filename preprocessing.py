@@ -16,6 +16,8 @@ from setter import (
     TYPE_TO_TOKEN,
     NUM_HOLDS_NORM,
     SPACING_NORM,
+    NUM_WAYPOINTS,
+    BOARD_COORD_NORM,
     is_valid_hold_id,
     hold_id_to_xy,
 )
@@ -94,6 +96,16 @@ def _load_combined_dataset():
 dataset = _load_combined_dataset()
 dataset = dataset.train_test_split(test_size=0.2, seed=DATASET_SPLIT_SEED)
 
+
+def _evenly_spaced_indices(n, k):
+    """k indices into a length-n sequence, evenly spaced by position (equivalent to
+    round(np.linspace(0, n-1, k)) without adding a numpy dependency for this one use).
+    Used to pick which holds' real positions become the coarse-skeleton waypoints -
+    see parseRow. n<=1 repeats index 0 for every slot, matching linspace's behavior."""
+    if n <= 1:
+        return [0] * k
+    return [round(i * (n - 1) / (k - 1)) for i in range(k)]
+
 def parseRow(row, min_truncate=1):
     """
     Parses hold sequence from dataset into tokens.
@@ -153,6 +165,21 @@ def parseRow(row, min_truncate=1):
     else:
         avg_spacing = 0.0
 
+    # Coarse skeleton for two-stage generation (see Setter.predict_waypoints/forward
+    # in setter.py): NUM_WAYPOINTS real (x, y) hold positions, evenly spaced by index
+    # through the (already climbing-ordered) valid_holds list - a simple stand-in for
+    # "evenly spaced by move count" that needs no extra design decisions about height
+    # bins vs. move count, since holds are already in climbing order. Routes with
+    # zero holds get an all-zero plan (matches coord_table's convention for "no real
+    # position" elsewhere in setter.py); routes with fewer than NUM_WAYPOINTS holds
+    # just repeat some indices, which is fine - it's still a real, if repeated, shape.
+    if valid_holds:
+        wp_indices = _evenly_spaced_indices(len(valid_holds), NUM_WAYPOINTS)
+        waypoints = [hold_id_to_xy(valid_holds[i][2]) for i in wp_indices]
+        waypoints = [(x / BOARD_COORD_NORM, y / BOARD_COORD_NORM) for x, y in waypoints]
+    else:
+        waypoints = [(0.0, 0.0)] * NUM_WAYPOINTS
+
     # Optional: Add data augmentation by sometimes truncating the input
     # This teaches the model to continue partial routes
     if random.random() < 0.3 and len(holds) > 3:  # 30% of time, truncate for augmentation
@@ -181,6 +208,8 @@ def parseRow(row, min_truncate=1):
         # Average consecutive-hold distance in the (now climbing-order) sequence,
         # normalized, for the auxiliary spacing head in training.py.
         'avg_spacing': torch.tensor(avg_spacing / SPACING_NORM),
+        # Coarse (x, y) skeleton, see above - shape (NUM_WAYPOINTS, 2).
+        'waypoints': torch.tensor(waypoints, dtype=torch.float32),
     }
 
 def collate_fn(batch):
@@ -205,6 +234,7 @@ def collate_fn(batch):
         "num_holds": torch.stack([x["num_holds"] for x in batch]),
         "foot_fraction": torch.stack([x["foot_fraction"] for x in batch]),
         "avg_spacing": torch.stack([x["avg_spacing"] for x in batch]),
+        "waypoints": torch.stack([x["waypoints"] for x in batch]),
     }
     return padded_batch
 

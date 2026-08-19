@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, WeightedRandomSampler
 from preprocessing import train_dataset, test_dataset, collate_fn, train_sample_weights
-from setter import Setter, VOCAB_SIZE, PAD_TOKEN_ID, load_checkpoint_state_dict
+from setter import Setter, VOCAB_SIZE, PAD_TOKEN_ID, NUM_WAYPOINTS, load_checkpoint_state_dict
 from evaluate import run_evaluation
 from tqdm import tqdm
 
@@ -16,6 +16,7 @@ GRAD_CLIP_NORM = 1.0
 LENGTH_LOSS_WEIGHT = 0.1  # weight of the auxiliary length-prediction loss vs. the main CE loss
 FOOT_FRACTION_LOSS_WEIGHT = 0.1  # weight of the auxiliary foot-fraction loss vs. the main CE loss
 SPACING_LOSS_WEIGHT = 0.1  # weight of the auxiliary spacing-prediction loss vs. the main CE loss
+WAYPOINT_LOSS_WEIGHT = 0.1  # weight of the auxiliary waypoint-prediction loss vs. the main CE loss
 WEIGHT_DECAY = 0.01  # AdamW decoupled weight decay, standard-ish default
 LABEL_SMOOTHING = 0.1  # softens the CE target so the model isn't pushed toward total certainty
 SEED = 42
@@ -98,14 +99,27 @@ def train():
             num_holds = batch["num_holds"].to(DEVICE)
             foot_fraction = batch["foot_fraction"].to(DEVICE)
             avg_spacing = batch["avg_spacing"].to(DEVICE)
+            waypoints = batch["waypoints"].to(DEVICE)
 
-            logits = model(input_ids, grade, angle, labels=labels)
+            # Stage-2 decoding is teacher-forced on the *real* extracted waypoints
+            # here (not the model's own predict_waypoints() output) - same reasoning
+            # as teacher-forcing on real tokens: conditioning on a noisy self-prediction
+            # during training would compound stage-1 error into stage-2 gradients.
+            # waypoint_head is supervised separately below, exactly like the other aux
+            # heads, so it learns to approximate these same real waypoints for use at
+            # inference time (when the real route/waypoints obviously aren't available).
+            logits = model(input_ids, grade, angle, waypoints, labels=labels)
             ce_loss = criterion(logits.reshape(-1, VOCAB_SIZE), labels.reshape(-1))
-            length_loss = nn.functional.mse_loss(model.predict_length(grade, angle), num_holds)
+            length_mean, length_log_std = model.predict_length(grade, angle)
+            length_loss = nn.functional.gaussian_nll_loss(length_mean, num_holds, (2 * length_log_std).exp())
             foot_loss = nn.functional.mse_loss(model.predict_foot_fraction(grade, angle), foot_fraction)
             spacing_loss = nn.functional.mse_loss(model.predict_spacing(grade, angle), avg_spacing)
+            waypoint_loss = nn.functional.mse_loss(
+                model.predict_waypoints(grade, angle).reshape(-1, NUM_WAYPOINTS * 2),
+                waypoints.reshape(-1, NUM_WAYPOINTS * 2),
+            )
             loss = (ce_loss + LENGTH_LOSS_WEIGHT * length_loss + FOOT_FRACTION_LOSS_WEIGHT * foot_loss
-                    + SPACING_LOSS_WEIGHT * spacing_loss)
+                    + SPACING_LOSS_WEIGHT * spacing_loss + WAYPOINT_LOSS_WEIGHT * waypoint_loss)
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP_NORM)
@@ -124,14 +138,20 @@ def train():
                 num_holds = batch["num_holds"].to(DEVICE)
                 foot_fraction = batch["foot_fraction"].to(DEVICE)
                 avg_spacing = batch["avg_spacing"].to(DEVICE)
+                waypoints = batch["waypoints"].to(DEVICE)
 
-                logits = model(input_ids, grade, angle, labels=labels)
+                logits = model(input_ids, grade, angle, waypoints, labels=labels)
                 ce_loss = criterion(logits.reshape(-1, VOCAB_SIZE), labels.reshape(-1))
-                length_loss = nn.functional.mse_loss(model.predict_length(grade, angle), num_holds)
+                length_mean, length_log_std = model.predict_length(grade, angle)
+                length_loss = nn.functional.gaussian_nll_loss(length_mean, num_holds, (2 * length_log_std).exp())
                 foot_loss = nn.functional.mse_loss(model.predict_foot_fraction(grade, angle), foot_fraction)
                 spacing_loss = nn.functional.mse_loss(model.predict_spacing(grade, angle), avg_spacing)
+                waypoint_loss = nn.functional.mse_loss(
+                    model.predict_waypoints(grade, angle).reshape(-1, NUM_WAYPOINTS * 2),
+                    waypoints.reshape(-1, NUM_WAYPOINTS * 2),
+                )
                 val_loss += (ce_loss + LENGTH_LOSS_WEIGHT * length_loss + FOOT_FRACTION_LOSS_WEIGHT * foot_loss
-                             + SPACING_LOSS_WEIGHT * spacing_loss).item()
+                             + SPACING_LOSS_WEIGHT * spacing_loss + WAYPOINT_LOSS_WEIGHT * waypoint_loss).item()
 
         avg_train_loss = train_loss / len(train_loader)
         avg_val_loss = val_loss / len(test_loader)
