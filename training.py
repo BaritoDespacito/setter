@@ -16,7 +16,14 @@ GRAD_CLIP_NORM = 1.0
 LENGTH_LOSS_WEIGHT = 0.1  # weight of the auxiliary length-prediction loss vs. the main CE loss
 FOOT_FRACTION_LOSS_WEIGHT = 0.1  # weight of the auxiliary foot-fraction loss vs. the main CE loss
 SPACING_LOSS_WEIGHT = 0.1  # weight of the auxiliary spacing-prediction loss vs. the main CE loss
-WAYPOINT_LOSS_WEIGHT = 0.1  # weight of the auxiliary waypoint-prediction loss vs. the main CE loss
+WAYPOINT_LOSS_WEIGHT = 1.0  # weight of the auxiliary waypoint-prediction loss vs. the main CE loss.
+# Raised from 0.1 (same as the other aux losses) after the first retrain: at 0.1,
+# waypoint_head collapsed to predicting ~the dataset mean regardless of grade/angle
+# (post-training MSE on held-out data was statistically identical to an "always
+# predict the mean" baseline) - a coherent 5-point 2D path needs more gradient pull
+# than a single scalar target evidently does at that weight. Also gave waypoint_head
+# more capacity (see setter.py) - if 1.0 still isn't enough after this retrain, that's
+# the next knob to turn, not a third architecture change.
 WEIGHT_DECAY = 0.01  # AdamW decoupled weight decay, standard-ish default
 LABEL_SMOOTHING = 0.1  # softens the CE target so the model isn't pushed toward total certainty
 SEED = 42

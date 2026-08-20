@@ -356,10 +356,22 @@ class Setter(nn.Module):
         self.spacing_head = nn.Linear(d_model, 1)
 
         # Predicts the NUM_WAYPOINTS-point coarse skeleton (see waypoint_embed above)
-        # from the conditioning vector alone, same pattern as the other aux heads -
-        # trained via plain MSE against real extracted waypoints (see training.py),
-        # consumed at inference time by generate.py to condition stage-2 decoding.
-        self.waypoint_head = nn.Linear(d_model, NUM_WAYPOINTS * 2)
+        # from the conditioning vector alone, trained via MSE against real extracted
+        # waypoints (see training.py), consumed at inference time by generate.py to
+        # condition stage-2 decoding. A bare nn.Linear here (the original design,
+        # matching the other scalar aux heads) collapsed to predicting ~the dataset
+        # mean regardless of grade/angle - confirmed post-first-retrain: MSE on held-
+        # out data was statistically identical to an "always predict the mean"
+        # baseline, and predicted x-variance was ~13x smaller than real data's. A
+        # single scalar target (length, foot-fraction) apparently gets enough signal
+        # through a bare Linear off `cond`, but a coherent 5-point 2D path evidently
+        # doesn't - give it the same Linear->ReLU->Linear capacity condition_embed
+        # itself uses instead of a linear readout of it.
+        self.waypoint_head = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.ReLU(),
+            nn.Linear(d_model, NUM_WAYPOINTS * 2),
+        )
 
         # Initialize weights
         self._init_weights()
