@@ -173,12 +173,26 @@ def parseRow(row, min_truncate=1):
     # zero holds get an all-zero plan (matches coord_table's convention for "no real
     # position" elsewhere in setter.py); routes with fewer than NUM_WAYPOINTS holds
     # just repeat some indices, which is fine - it's still a real, if repeated, shape.
+    #
+    # Each waypoint also carries step_dist: the normalized distance from the previous
+    # waypoint (or from the route's actual first/lowest hold, for waypoint 0 - there's
+    # no waypoint -1 to measure from). Real data shows this stride grows with grade
+    # even though absolute waypoint position doesn't - see Setter.waypoint_step_head's
+    # docstring in setter.py for why this is worth carrying as an explicit feature
+    # rather than leaving the realizer to infer stride from (x, y) deltas alone.
     if valid_holds:
         wp_indices = _evenly_spaced_indices(len(valid_holds), NUM_WAYPOINTS)
-        waypoints = [hold_id_to_xy(valid_holds[i][2]) for i in wp_indices]
-        waypoints = [(x / BOARD_COORD_NORM, y / BOARD_COORD_NORM) for x, y in waypoints]
+        wp_xy = [hold_id_to_xy(valid_holds[i][2]) for i in wp_indices]
+        wp_xy = [(x / BOARD_COORD_NORM, y / BOARD_COORD_NORM) for x, y in wp_xy]
+        start_xy = hold_id_to_xy(valid_holds[0][2])
+        prev_xy = (start_xy[0] / BOARD_COORD_NORM, start_xy[1] / BOARD_COORD_NORM)
+        waypoints = []
+        for x, y in wp_xy:
+            step_dist = ((x - prev_xy[0]) ** 2 + (y - prev_xy[1]) ** 2) ** 0.5
+            waypoints.append((x, y, step_dist))
+            prev_xy = (x, y)
     else:
-        waypoints = [(0.0, 0.0)] * NUM_WAYPOINTS
+        waypoints = [(0.0, 0.0, 0.0)] * NUM_WAYPOINTS
 
     # Optional: Add data augmentation by sometimes truncating the input
     # This teaches the model to continue partial routes
@@ -208,7 +222,7 @@ def parseRow(row, min_truncate=1):
         # Average consecutive-hold distance in the (now climbing-order) sequence,
         # normalized, for the auxiliary spacing head in training.py.
         'avg_spacing': torch.tensor(avg_spacing / SPACING_NORM),
-        # Coarse (x, y) skeleton, see above - shape (NUM_WAYPOINTS, 2).
+        # Coarse (x, y, step_dist) skeleton, see above - shape (NUM_WAYPOINTS, 3).
         'waypoints': torch.tensor(waypoints, dtype=torch.float32),
     }
 

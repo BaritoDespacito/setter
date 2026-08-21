@@ -299,18 +299,25 @@ class Setter(nn.Module):
             nn.Linear(d_model, d_model)
         )
 
-        # Two-stage generation: waypoint_head predicts a coarse (x, y) skeleton from
-        # grade/angle alone (see predict_waypoints), the same way length_head etc. do
-        # below - but unlike those, this plan re-enters the decoder as real
-        # conditioning (see forward()'s waypoint prefix) instead of only ever
-        # configuring an external loop parameter. waypoint_embed projects the plan's
-        # (x, y) positions the same way coord_embed does for placed-hold positions,
+        # Two-stage generation: waypoint_head predicts a coarse (x, y, step_dist)
+        # skeleton from grade/angle alone (see predict_waypoints), the same way
+        # length_head etc. do below - but unlike those, this plan re-enters the
+        # decoder as real conditioning (see forward()'s waypoint prefix) instead of
+        # only ever configuring an external loop parameter. Each waypoint carries a
+        # third feature, step_dist (the normalized distance from the *previous*
+        # waypoint/start hold) alongside its (x, y) - real data shows this distance
+        # grows with grade even though absolute (x, y) position doesn't (see the
+        # comment on waypoint_start/waypoint_step_head below), so folding it into the
+        # embedded plan gives the stage-2 realizer an explicit "expect a bigger move
+        # here" signal instead of leaving it to infer stride purely from (x, y)
+        # deltas across the 5 sparse plan slots. waypoint_embed projects each 3-vector
+        # into d_model the same way coord_embed does for placed-hold (x, y) positions,
         # kept as a separate layer since the semantics differ (a plan position isn't a
         # placed hold). waypoint_pos_embed gives each of the NUM_WAYPOINTS prefix slots
         # its own identity, standing in for pos_encoding (which is step-in-sequence
         # positional, the wrong notion of "position" for a fixed small set of plan
         # slots that aren't sequence steps).
-        self.waypoint_embed = nn.Linear(2, d_model)
+        self.waypoint_embed = nn.Linear(3, d_model)
         self.waypoint_pos_embed = nn.Parameter(torch.zeros(NUM_WAYPOINTS, d_model))
 
         # Use TransformerDecoder with cross-attention to conditioning
@@ -374,17 +381,21 @@ class Setter(nn.Module):
         # how it's trained.
         #
         # waypoint_start is a learned placeholder for "the position before waypoint 0"
-        # (there's no real previous hold to condition the first step on).
+        # (there's no real previous hold to condition the first step on). It only
+        # stands in for the *coordinate* half of that non-existent previous point -
+        # step_dist has nothing analogous to carry forward (see predict_waypoints),
+        # so it stays 2-dim even though each waypoint itself is now 3-dim.
         # waypoint_step_head takes [cond ; previous (x,y)] and predicts the *next*
-        # waypoint as a distribution (mean, log_std per coordinate) rather than a
-        # point estimate - same reasoning as predict_length: letting the model say "x
-        # is genuinely uncertain here" instead of being forced into a false-confident
-        # guess that plain MSE would punish regardless.
+        # waypoint - (x, y, step_dist) - as a distribution (mean, log_std per
+        # feature) rather than a point estimate - same reasoning as predict_length:
+        # letting the model say "x is genuinely uncertain here" instead of being
+        # forced into a false-confident guess that plain MSE would punish regardless.
         self.waypoint_start = nn.Parameter(torch.zeros(2))
         self.waypoint_step_head = nn.Sequential(
             nn.Linear(d_model + 2, d_model),
             nn.ReLU(),
-            nn.Linear(d_model, 4),  # mean_x, mean_y, log_std_x, log_std_y
+            # mean_x, mean_y, mean_step_dist, log_std_x, log_std_y, log_std_step_dist
+            nn.Linear(d_model, 6),
         )
 
         # Initialize weights
@@ -416,25 +427,31 @@ class Setter(nn.Module):
     def waypoint_step(self, cond, prev_xy):
         """One autoregressive waypoint step: given the conditioning vector (batch,
         d_model) and the previous waypoint's (x, y) (or waypoint_start for the first
-        step), returns (mean, log_std) for the *next* waypoint, each (batch, 2).
-        log_std is clamped for the same stability reason as predict_length's."""
+        step), returns (mean, log_std) for the *next* waypoint - (x, y, step_dist) -
+        each (batch, 3). log_std is clamped for the same stability reason as
+        predict_length's."""
         out = self.waypoint_step_head(torch.cat([cond, prev_xy], dim=-1))
-        mean = out[:, :2]
-        log_std = out[:, 2:].clamp(-6.0, 1.0)
+        mean = out[:, :3]
+        log_std = out[:, 3:].clamp(-6.0, 1.0)
         return mean, log_std
 
     def predict_waypoints(self, grade, angle, real_waypoints=None):
         """Autoregressively predicts the full NUM_WAYPOINTS-point skeleton, one step
         at a time. With real_waypoints given (training/teacher-forcing), each step
-        conditions on the REAL previous waypoint - same idea as teacher-forcing token
-        generation on the real previous token, so waypoint_step_head learns to predict
-        step k from a real step k-1, not from its own possibly-bad earlier guess.
+        conditions on the REAL previous waypoint's (x, y) - same idea as
+        teacher-forcing token generation on the real previous token, so
+        waypoint_step_head learns to predict step k from a real step k-1, not from
+        its own possibly-bad earlier guess. Only the (x, y) half of each waypoint
+        is carried forward as next-step input (see waypoint_start) - step_dist has
+        no analogous "next step's previous step_dist" to condition on, it's purely
+        an extra predicted target at each step.
         Without real_waypoints, each step conditions on the previous step's predicted
-        *mean* - a reasonable deterministic "most likely path" default, but
+        *mean* (x, y) - a reasonable deterministic "most likely path" default, but
         generate.py doesn't use this fallback for actual generation: it calls
         condition_embed/waypoint_step directly so it can *sample* each step (for
-        cross-attempt diversity) and feed the sample forward instead of the mean.
-        Returns (means, log_stds), each (batch, NUM_WAYPOINTS, 2)."""
+        cross-attempt diversity) and feed the sampled (x, y) forward instead of the
+        mean.
+        Returns (means, log_stds), each (batch, NUM_WAYPOINTS, 3)."""
         conditions = torch.stack([grade, angle], dim=-1)  # (batch, 2)
         cond = self.condition_embed(conditions)  # (batch, d_model)
         batch = grade.size(0)
@@ -445,7 +462,7 @@ class Setter(nn.Module):
             mean_k, log_std_k = self.waypoint_step(cond, prev_xy)
             means.append(mean_k)
             log_stds.append(log_std_k)
-            prev_xy = real_waypoints[:, k] if real_waypoints is not None else mean_k
+            prev_xy = real_waypoints[:, k, :2] if real_waypoints is not None else mean_k[:, :2]
         return torch.stack(means, dim=1), torch.stack(log_stds, dim=1)
 
     def _init_weights(self):
@@ -460,11 +477,11 @@ class Setter(nn.Module):
             input_ids: (batch, seq_len) - input sequence tokens
             grade: (batch,) - normalized grade values
             angle: (batch,) - normalized angle values
-            waypoints: (batch, NUM_WAYPOINTS, 2) - normalized (x, y) coarse-skeleton
-                positions this generation should realize (real extracted waypoints
-                during training/teacher-forcing, predict_waypoints() + inference-time
-                noise during generation - see generate.py). Prepended as extra decoder
-                positions, not passed through fc_out (see step 6 below).
+            waypoints: (batch, NUM_WAYPOINTS, 3) - normalized (x, y, step_dist)
+                coarse-skeleton points this generation should realize (real extracted
+                waypoints during training/teacher-forcing, sampled autoregressively at
+                inference - see generate.py). Prepended as extra decoder positions,
+                not passed through fc_out (see step 6 below).
             labels: (batch, label_len) - target sequence tokens for training
 
         Returns:

@@ -19,6 +19,8 @@ from setter import (
     load_checkpoint_state_dict,
     hold_id_to_xy,
     v_grade_to_normalized_difficulty,
+    SPACING_NORM,
+    BOARD_COORD_NORM,
 )
 import argparse
 import datetime
@@ -49,6 +51,12 @@ _HOLD_ADJACENCY = build_hold_adjacency()
 _HOLD_ID_OF_TOKEN = torch.arange(VOCAB_SIZE) // 10
 _IS_FOOT_TOKEN = (torch.arange(VOCAB_SIZE) % 10) == TYPE_TO_TOKEN[FOOT_HOLD_TYPE]
 
+# Real hold tokens only (excludes END/PAD/START, which all map to hold_id 0 the same
+# as any out-of-range token) - used to keep the spacing/waypoint-progress distance
+# biases below from ever touching non-hold tokens, whose coord_table entry is a
+# meaningless (0, 0) placeholder (see build_coord_table in setter.py).
+_IS_HOLD_TOKEN = _VALID_TOKEN_MASK & (_HOLD_ID_OF_TOKEN > 0)
+
 # Logit penalty applied to holds not reachable from anything placed so far. Soft, not
 # a hard mask: the base model was never trained with this constraint in mind, so a
 # hard cutoff risks zeroing out every option the model actually favors on a given
@@ -77,6 +85,32 @@ TOP_P = 0.85
 # cumulative effect.
 FOOT_BIAS_SCALE = 2.0
 FOOT_BIAS_MAX = 1.0
+
+# predict_spacing() was trained (see setter.py's spacing_head comment - real
+# consecutive-hold reach nearly doubles from easiest to hardest grades) but was never
+# consulted at generation time - the model learned the correlation but nothing acted
+# on it. This penalizes each candidate hold by how far its distance from the
+# most-recently-placed hold deviates from the model's own predicted target spacing,
+# in the same normalized coordinate units as coord_table (BOARD_COORD_NORM). Scale
+# chosen to be comparable in magnitude to GRAPH_ADJACENCY_PENALTY - starting value,
+# not yet swept against evaluate.py.
+SPACING_BIAS_SCALE = 4.0
+
+# Logit bias (per unit of normalized distance) steering sampling toward the hold
+# nearest the current target waypoint - the stage-1 plan otherwise only reaches the
+# decoder as background conditioning (see forward()'s waypoint prefix) with no direct
+# say over which hold gets picked at any one step. Small relative to
+# GRAPH_ADJACENCY_PENALTY/SPACING_BIAS_SCALE since it's a soft "steer toward the plan"
+# nudge, not a hard constraint - the token-level model and the reachability/spacing
+# biases above should still dominate on a step-by-step basis. Starting value, not yet
+# swept.
+WAYPOINT_PROGRESS_BIAS_SCALE = 1.0
+
+# Once the highest-placed hold's y is within this normalized-distance margin of (or
+# past) the current target waypoint, advance to the next one - otherwise the route
+# would keep aiming at a waypoint it's already effectively reached. ~30px at
+# BOARD_COORD_NORM=1450.
+WAYPOINT_REACHED_MARGIN = 30.0 / BOARD_COORD_NORM
 
 # Waypoints are now sampled, not just noised: predict_waypoints() is autoregressive
 # (each of the NUM_WAYPOINTS points conditions on the previous one, since the real
@@ -157,11 +191,25 @@ def _sample_tokens_batch(model, grade, angle, max_length, temperatures, device, 
         prev_xy = model.waypoint_start.unsqueeze(0).expand(B, -1)
         waypoint_steps = []
         for _ in range(NUM_WAYPOINTS):
-            mean_xy, log_std_xy = model.waypoint_step(cond, prev_xy)
-            sample_xy = mean_xy + log_std_xy.exp() * torch.randn_like(mean_xy)
-            waypoint_steps.append(sample_xy)
-            prev_xy = sample_xy
-        waypoints = torch.stack(waypoint_steps, dim=1)
+            mean, log_std = model.waypoint_step(cond, prev_xy)  # (B, 3): x, y, step_dist
+            sample = mean + log_std.exp() * torch.randn_like(mean)
+            waypoint_steps.append(sample)
+            prev_xy = sample[:, :2]  # only (x, y) feeds the next step, see setter.py
+        waypoints = torch.stack(waypoint_steps, dim=1)  # (B, NUM_WAYPOINTS, 3)
+        waypoints_xy = waypoints[:, :, :2]
+
+    # For the spacing/waypoint-progress biases below: real board coordinates (same
+    # normalization as waypoints_xy) for every vocab token, and the model's own
+    # predicted target spacing converted from predict_spacing()'s raw units (fraction
+    # of SPACING_NORM px) into the same normalized-coordinate units as coord_table.
+    coord_table = model.coord_table.to(device)
+    is_hold_token = _IS_HOLD_TOKEN.to(device)
+    with torch.no_grad():
+        target_spacing_norm = (
+            model.predict_spacing(grade_tensor, angle_tensor) * SPACING_NORM / BOARD_COORD_NORM
+        )
+    last_xy = torch.zeros(B, 2, device=device)
+    wp_idx = torch.zeros(B, dtype=torch.long, device=device)
 
     placed_hold_ids = [set() for _ in range(B)]
     placed_foot_count = [0] * B
@@ -177,6 +225,19 @@ def _sample_tokens_batch(model, grade, angle, max_length, temperatures, device, 
 
         next_logits = logits[:, -1].clone()
         next_logits[:, ~mask] = float("-inf")
+
+        # Waypoint-progress bias: steer toward the hold nearest the current target
+        # waypoint. Applies from the very first pick (wp_idx starts at 0) - the plan
+        # otherwise only reaches the decoder as background conditioning (see
+        # forward()'s waypoint prefix), with no direct say over which hold gets
+        # chosen at any one step.
+        target_xy = waypoints_xy[torch.arange(B, device=device), wp_idx]  # (B, 2)
+        dists_to_target = torch.norm(
+            coord_table.unsqueeze(0) - target_xy.unsqueeze(1), dim=-1
+        )  # (B, vocab)
+        next_logits[:, is_hold_token] -= (
+            dists_to_target[:, is_hold_token] * WAYPOINT_PROGRESS_BIAS_SCALE
+        )
 
         has_placed = torch.tensor([len(placed_hold_ids[b]) > 0 for b in range(B)], device=device)
         if has_placed.any():
@@ -214,6 +275,19 @@ def _sample_tokens_batch(model, grade, angle, max_length, temperatures, device, 
             bias = bias.clamp(-FOOT_BIAS_MAX, FOOT_BIAS_MAX)
             next_logits[:, is_foot_token] += bias.unsqueeze(1)
 
+            # predict_spacing() bias: penalize candidates whose distance from the
+            # most-recently-placed hold deviates from the model's own predicted
+            # target reach. Previously this head was trained but never consulted at
+            # generation time - see SPACING_BIAS_SCALE's comment above.
+            dists_from_last = torch.norm(
+                coord_table.unsqueeze(0) - last_xy.unsqueeze(1), dim=-1
+            )  # (B, vocab)
+            spacing_penalty = (dists_from_last - target_spacing_norm.unsqueeze(1)).abs()
+            spacing_penalty = spacing_penalty * has_placed.unsqueeze(1).float()
+            next_logits[:, is_hold_token] -= (
+                spacing_penalty[:, is_hold_token] * SPACING_BIAS_SCALE
+            )
+
         probs = torch.softmax(next_logits / temperature_tensor, dim=-1)
         probs = _nucleus_filter(probs, top_p)
         next_token = torch.multinomial(probs, num_samples=1)  # (B, 1)
@@ -235,6 +309,19 @@ def _sample_tokens_batch(model, grade, angle, max_length, temperatures, device, 
             placed_hold_ids[b].add(token_id // 10)
             if token_id % 10 == TYPE_TO_TOKEN[FOOT_HOLD_TYPE]:
                 placed_foot_count[b] += 1
+
+            last_xy[b] = coord_table[token_id]
+            # Advance the target waypoint once this hold's height has reached (or
+            # passed) it - a while loop so a single big jump can skip past more than
+            # one waypoint at once, rather than getting stuck aiming at one already
+            # behind the route. Waypoints run bottom-to-top (see preprocessing.py),
+            # same convention as hold_id_to_xy: smaller y = higher on the board.
+            placed_y = last_xy[b, 1].item()
+            while (
+                wp_idx[b] < NUM_WAYPOINTS - 1
+                and placed_y <= waypoints_xy[b, wp_idx[b], 1].item() + WAYPOINT_REACHED_MARGIN
+            ):
+                wp_idx[b] += 1
 
         finished = finished | (next_token.squeeze(1) == END_TOKEN_ID)
 
