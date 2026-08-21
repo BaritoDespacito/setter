@@ -4,6 +4,7 @@ from setter import (
     Setter,
     VOCAB_SIZE,
     NUM_HOLDS_NORM,
+    NUM_WAYPOINTS,
     TYPE_TO_TOKEN,
     TOKEN_TO_TYPE,
     START_TOKEN_ID,
@@ -77,15 +78,16 @@ TOP_P = 0.85
 FOOT_BIAS_SCALE = 2.0
 FOOT_BIAS_MAX = 1.0
 
-# Std-dev (in the same normalized-coordinate units as Setter's waypoints, i.e.
-# fraction of BOARD_COORD_NORM=1450px - 0.03 is ~45px) of Gaussian noise added to
-# predict_waypoints()'s output, independently per batched attempt. waypoint_head is
-# trained deterministically (plain MSE against real waypoints, see training.py), so
-# without this every attempt in a batch would condition on the *identical* skeleton
-# (grade/angle are the same across attempts, only temperature varies) - collapsing
-# plan diversity down to whatever stage-2 sampling temperature alone provides.
-# Starting value, not yet tuned against real generations post-retrain.
-WAYPOINT_NOISE_STD = 0.03
+# Waypoints are now sampled, not just noised: predict_waypoints() is autoregressive
+# (each of the NUM_WAYPOINTS points conditions on the previous one, since the real
+# data shows strong path continuity from waypoint 1 onward - see setter.py's
+# waypoint_step()/predict_waypoints() docstrings). At training time this is
+# teacher-forced on the real previous waypoint; at inference there's no real previous
+# waypoint to force with, so each step draws its own Gaussian sample (using the head's
+# own predicted log_std, not a fixed constant) and feeds that sample forward as the
+# next step's input - this naturally gives every batched attempt a different plan
+# (grade/angle are identical across attempts, only the per-step noise differs) without
+# a separately-tuned noise constant.
 
 # How many attempts-batches generate_route() will try before giving up and accepting
 # a best-effort (possibly invalid) result. Only ever matters on the rare grade/angle
@@ -147,12 +149,19 @@ def _sample_tokens_batch(model, grade, angle, max_length, temperatures, device, 
         target_foot_fraction = model.predict_foot_fraction(grade_tensor, angle_tensor)
     target_foot_fraction = target_foot_fraction.clamp(0.0, 1.0)
 
-    # Stage-1 plan: same predicted skeleton for every attempt (grade/angle are
-    # identical across the batch), perturbed independently per attempt so stage-2
-    # still gets per-attempt diversity - see WAYPOINT_NOISE_STD above.
+    # Stage-1 plan: autoregressively sample a waypoint path per attempt (grade/angle
+    # are identical across the batch, so each step's own Gaussian sample is what gives
+    # different attempts different plans - see the comment above _sample_tokens_batch).
     with torch.no_grad():
-        waypoints = model.predict_waypoints(grade_tensor, angle_tensor)
-    waypoints = waypoints + WAYPOINT_NOISE_STD * torch.randn_like(waypoints)
+        cond = model.condition_embed(torch.stack([grade_tensor, angle_tensor], dim=-1))
+        prev_xy = model.waypoint_start.unsqueeze(0).expand(B, -1)
+        waypoint_steps = []
+        for _ in range(NUM_WAYPOINTS):
+            mean_xy, log_std_xy = model.waypoint_step(cond, prev_xy)
+            sample_xy = mean_xy + log_std_xy.exp() * torch.randn_like(mean_xy)
+            waypoint_steps.append(sample_xy)
+            prev_xy = sample_xy
+        waypoints = torch.stack(waypoint_steps, dim=1)
 
     placed_hold_ids = [set() for _ in range(B)]
     placed_foot_count = [0] * B

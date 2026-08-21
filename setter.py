@@ -355,22 +355,36 @@ class Setter(nn.Module):
         # holds by climbing height, so "consecutive" corresponds to a real move.
         self.spacing_head = nn.Linear(d_model, 1)
 
-        # Predicts the NUM_WAYPOINTS-point coarse skeleton (see waypoint_embed above)
-        # from the conditioning vector alone, trained via MSE against real extracted
-        # waypoints (see training.py), consumed at inference time by generate.py to
-        # condition stage-2 decoding. A bare nn.Linear here (the original design,
-        # matching the other scalar aux heads) collapsed to predicting ~the dataset
-        # mean regardless of grade/angle - confirmed post-first-retrain: MSE on held-
-        # out data was statistically identical to an "always predict the mean"
-        # baseline, and predicted x-variance was ~13x smaller than real data's. A
-        # single scalar target (length, foot-fraction) apparently gets enough signal
-        # through a bare Linear off `cond`, but a coherent 5-point 2D path evidently
-        # doesn't - give it the same Linear->ReLU->Linear capacity condition_embed
-        # itself uses instead of a linear readout of it.
-        self.waypoint_head = nn.Sequential(
-            nn.Linear(d_model, d_model),
+        # Predicts the NUM_WAYPOINTS-point coarse skeleton (see waypoint_embed above),
+        # one waypoint at a time (see waypoint_step/predict_waypoints below) instead
+        # of all NUM_WAYPOINTS in one shot from (grade, angle) alone. Two retrains
+        # confirmed why a one-shot head can't work here, regardless of loss weight or
+        # capacity: real waypoint x-position has ~zero correlation with grade/angle
+        # (|corr| < 0.05 across all 5 slots - a route's left-right placement is the
+        # setter's free creative choice, not difficulty-driven), so a function of only
+        # (grade, angle) has no signal to predict beyond the marginal mean for x - "the
+        # collapse" was mathematically correct MSE-minimizing behavior, not a training
+        # failure. What real data *does* show: consecutive waypoints correlate with
+        # each other (corr(x_k, x_k+1) ~0.39-0.47 from waypoint 1 onward) and step
+        # *distance* correlates with grade (0.04 -> 0.23, growing toward the top) - a
+        # path has continuity and its stride grows with difficulty, even though its
+        # absolute position doesn't track difficulty at all. Only an autoregressive
+        # predictor - conditioning each waypoint on the previous one - can represent
+        # that; a one-shot function of (grade, angle) structurally cannot, no matter
+        # how it's trained.
+        #
+        # waypoint_start is a learned placeholder for "the position before waypoint 0"
+        # (there's no real previous hold to condition the first step on).
+        # waypoint_step_head takes [cond ; previous (x,y)] and predicts the *next*
+        # waypoint as a distribution (mean, log_std per coordinate) rather than a
+        # point estimate - same reasoning as predict_length: letting the model say "x
+        # is genuinely uncertain here" instead of being forced into a false-confident
+        # guess that plain MSE would punish regardless.
+        self.waypoint_start = nn.Parameter(torch.zeros(2))
+        self.waypoint_step_head = nn.Sequential(
+            nn.Linear(d_model + 2, d_model),
             nn.ReLU(),
-            nn.Linear(d_model, NUM_WAYPOINTS * 2),
+            nn.Linear(d_model, 4),  # mean_x, mean_y, log_std_x, log_std_y
         )
 
         # Initialize weights
@@ -399,10 +413,40 @@ class Setter(nn.Module):
         cond = self.condition_embed(conditions)  # (batch, d_model)
         return self.spacing_head(cond).squeeze(-1)  # (batch,)
 
-    def predict_waypoints(self, grade, angle):
+    def waypoint_step(self, cond, prev_xy):
+        """One autoregressive waypoint step: given the conditioning vector (batch,
+        d_model) and the previous waypoint's (x, y) (or waypoint_start for the first
+        step), returns (mean, log_std) for the *next* waypoint, each (batch, 2).
+        log_std is clamped for the same stability reason as predict_length's."""
+        out = self.waypoint_step_head(torch.cat([cond, prev_xy], dim=-1))
+        mean = out[:, :2]
+        log_std = out[:, 2:].clamp(-6.0, 1.0)
+        return mean, log_std
+
+    def predict_waypoints(self, grade, angle, real_waypoints=None):
+        """Autoregressively predicts the full NUM_WAYPOINTS-point skeleton, one step
+        at a time. With real_waypoints given (training/teacher-forcing), each step
+        conditions on the REAL previous waypoint - same idea as teacher-forcing token
+        generation on the real previous token, so waypoint_step_head learns to predict
+        step k from a real step k-1, not from its own possibly-bad earlier guess.
+        Without real_waypoints, each step conditions on the previous step's predicted
+        *mean* - a reasonable deterministic "most likely path" default, but
+        generate.py doesn't use this fallback for actual generation: it calls
+        condition_embed/waypoint_step directly so it can *sample* each step (for
+        cross-attempt diversity) and feed the sample forward instead of the mean.
+        Returns (means, log_stds), each (batch, NUM_WAYPOINTS, 2)."""
         conditions = torch.stack([grade, angle], dim=-1)  # (batch, 2)
         cond = self.condition_embed(conditions)  # (batch, d_model)
-        return self.waypoint_head(cond).view(-1, NUM_WAYPOINTS, 2)  # (batch, NUM_WAYPOINTS, 2)
+        batch = grade.size(0)
+        prev_xy = self.waypoint_start.unsqueeze(0).expand(batch, -1)
+
+        means, log_stds = [], []
+        for k in range(NUM_WAYPOINTS):
+            mean_k, log_std_k = self.waypoint_step(cond, prev_xy)
+            means.append(mean_k)
+            log_stds.append(log_std_k)
+            prev_xy = real_waypoints[:, k] if real_waypoints is not None else mean_k
+        return torch.stack(means, dim=1), torch.stack(log_stds, dim=1)
 
     def _init_weights(self):
         """Initialize weights for better training"""

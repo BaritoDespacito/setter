@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, WeightedRandomSampler
 from preprocessing import train_dataset, test_dataset, collate_fn, train_sample_weights
-from setter import Setter, VOCAB_SIZE, PAD_TOKEN_ID, NUM_WAYPOINTS, load_checkpoint_state_dict
+from setter import Setter, VOCAB_SIZE, PAD_TOKEN_ID, load_checkpoint_state_dict
 from evaluate import run_evaluation
 from tqdm import tqdm
 
@@ -109,22 +109,23 @@ def train():
             waypoints = batch["waypoints"].to(DEVICE)
 
             # Stage-2 decoding is teacher-forced on the *real* extracted waypoints
-            # here (not the model's own predict_waypoints() output) - same reasoning
-            # as teacher-forcing on real tokens: conditioning on a noisy self-prediction
-            # during training would compound stage-1 error into stage-2 gradients.
-            # waypoint_head is supervised separately below, exactly like the other aux
-            # heads, so it learns to approximate these same real waypoints for use at
-            # inference time (when the real route/waypoints obviously aren't available).
+            # here (not the model's own predict_waypoints() output) - conditioning on
+            # a noisy self-prediction during training would compound stage-1 error
+            # into stage-2 gradients. predict_waypoints() below is ALSO teacher-forced
+            # (real_waypoints=waypoints) for the same reason, one level up: each
+            # waypoint step conditions on the real previous waypoint, not its own
+            # possibly-bad earlier guess, matching how token generation is already
+            # teacher-forced. At inference (generate.py) there's no real previous
+            # waypoint to force with, so each step samples its own prediction and
+            # feeds that forward instead.
             logits = model(input_ids, grade, angle, waypoints, labels=labels)
             ce_loss = criterion(logits.reshape(-1, VOCAB_SIZE), labels.reshape(-1))
             length_mean, length_log_std = model.predict_length(grade, angle)
             length_loss = nn.functional.gaussian_nll_loss(length_mean, num_holds, (2 * length_log_std).exp())
             foot_loss = nn.functional.mse_loss(model.predict_foot_fraction(grade, angle), foot_fraction)
             spacing_loss = nn.functional.mse_loss(model.predict_spacing(grade, angle), avg_spacing)
-            waypoint_loss = nn.functional.mse_loss(
-                model.predict_waypoints(grade, angle).reshape(-1, NUM_WAYPOINTS * 2),
-                waypoints.reshape(-1, NUM_WAYPOINTS * 2),
-            )
+            wp_means, wp_log_stds = model.predict_waypoints(grade, angle, real_waypoints=waypoints)
+            waypoint_loss = nn.functional.gaussian_nll_loss(wp_means, waypoints, (2 * wp_log_stds).exp())
             loss = (ce_loss + LENGTH_LOSS_WEIGHT * length_loss + FOOT_FRACTION_LOSS_WEIGHT * foot_loss
                     + SPACING_LOSS_WEIGHT * spacing_loss + WAYPOINT_LOSS_WEIGHT * waypoint_loss)
 
@@ -153,10 +154,8 @@ def train():
                 length_loss = nn.functional.gaussian_nll_loss(length_mean, num_holds, (2 * length_log_std).exp())
                 foot_loss = nn.functional.mse_loss(model.predict_foot_fraction(grade, angle), foot_fraction)
                 spacing_loss = nn.functional.mse_loss(model.predict_spacing(grade, angle), avg_spacing)
-                waypoint_loss = nn.functional.mse_loss(
-                    model.predict_waypoints(grade, angle).reshape(-1, NUM_WAYPOINTS * 2),
-                    waypoints.reshape(-1, NUM_WAYPOINTS * 2),
-                )
+                wp_means, wp_log_stds = model.predict_waypoints(grade, angle, real_waypoints=waypoints)
+                waypoint_loss = nn.functional.gaussian_nll_loss(wp_means, waypoints, (2 * wp_log_stds).exp())
                 val_loss += (ce_loss + LENGTH_LOSS_WEIGHT * length_loss + FOOT_FRACTION_LOSS_WEIGHT * foot_loss
                              + SPACING_LOSS_WEIGHT * spacing_loss + WAYPOINT_LOSS_WEIGHT * waypoint_loss).item()
 
